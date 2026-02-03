@@ -35,8 +35,8 @@
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
          (row-length (* width 4))
          (workspace (make-f64-array (* row-length (max threads height))))
-         (encoder (pf:get-encoder pixel-format))
-         (decoder (pf:get-decoder pixel-format)))
+         (encoder (pf:encoder pixel-format))
+         (decoder (pf:decoder pixel-format)))
     (check-type encoder function)
     (check-type decoder function)
     (%make-plan :encoder encoder

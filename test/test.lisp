@@ -339,8 +339,8 @@
       (is (= (ip::plan-height plan) height))
       (is (= (ip::plan-threads plan) threads))
       (is (= (length workspace) expected-length))
-      (is (eq (ip::plan-encoder plan) (pf:get-encoder 'pf:rgba8888/u32)))
-      (is (eq (ip::plan-decoder plan) (pf:get-decoder 'pf:rgba8888/u32))))))
+      (is (eq (ip::plan-encoder plan) (pf:encoder 'pf:rgba8888/u32)))
+      (is (eq (ip::plan-decoder plan) (pf:decoder 'pf:rgba8888/u32))))))
 
 (test image-pipeline.map-image.identity
   (let* ((plan (ip:make-plan :width 96 :height 96 :threads 8 :pixel-format 'pf:rgba8888/u32))
