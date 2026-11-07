@@ -177,3 +177,23 @@
   (lambda (buffer lane-index)
     (setf (pb:channel3 buffer lane-index) amount)
     (values)))
+
+(defun fill-position (buffer index x y)
+  (pb:set-channels buffer
+                   index
+                   (/ (mod x 256) 255d0)
+                   (/ (mod y 256) 255d0)
+                   (/ (mod (+ x y) 256) 255d0)
+                   (/ (mod (* x 3) 256) 255d0))
+  (values))
+
+(defun apply-fill-sequential (width height pixels ops &key (x1 0) (y1 0) x2 y2)
+  (let* ((x2 (or x2 width))
+         (y2 (or y2 height))
+         (buffer (decode-u32-rgba pixels width height)))
+    (loop :for y :from y1 :below y2
+          :do (loop :for x :from x1 :below x2
+                    :do (fill-position buffer (* (+ x (* y width)) 4) x y)))
+    (dolist (op ops)
+      (apply-op-rect buffer width x1 y1 x2 y2 op))
+    (encode-u32-rgba buffer width height)))

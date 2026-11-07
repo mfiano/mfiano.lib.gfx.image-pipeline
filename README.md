@@ -35,12 +35,13 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ### `make-plan`
 
 ```lisp
-(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads) => plan
+(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads filler) => plan
 ```
 
 * `pixel-format` defaults to `mfiano.lib.gfx.pixel-format:rgba8888/u32`
 * `width`/`height` are required
 * `threads` controls row-parallelism via `lparallel`
+* `filler` makes the plan generate pixels instead of decoding them; see [Generating images](#generating-images)
 
 ### `map-image`
 
@@ -207,6 +208,33 @@ Evaluation took:
 Notice how we did 2.3s of work in 0.1s, using ~83% of our available CPU, and consed zero bytes.
 
 The results are more than acceptable for a live coding environment, considering the work involved: multiple color space conversions to our temporary pixels, math to change the hue, and multiple conversions to bring it back to our display color space, over 42.25M bytes, with intermediate decodes and encodes from/to a `pixel-buffer`.
+
+## Generating images
+
+Give `make-plan` a `:filler` function and the plan generates an image instead of processing one. Where it would decode a pixel from `pixels`, it calls your function for that pixel instead. Your ops then run on the generated values in the same pass, and the result is encoded into `pixels`, which is only written to. A noise generator, for example, can have its samples colored and encoded without a second pass over the image.
+
+The function is called like an op, plus the pixel's position: `(funcall filler buffer index x y)`, where `x` and `y` are the pixel's column and row in the image. It must set all four channels of that pixel and must be safe to call from several threads at once, since rows are generated in parallel. It is called once per pixel, so write it with the same care as an op.
+
+This example generates a diagonal gray ramp and then inverts it with the op from the quick start:
+
+```lisp
+(defun diagonal-ramp (width height)
+  (let ((scale (/ 1d0 (+ width height))))
+    (lambda (buffer index x y)
+      (let ((value (* (+ x y) scale)))
+        (mfiano.lib.gfx.pixel-buffer:set-channels buffer index value value value 1d0))
+      (values))))
+
+(defparameter *ramp-plan*
+  (mfiano.lib.gfx.image-pipeline:make-plan
+   :pixel-format 'mfiano.lib.gfx.pixel-format:rgba8888/u32
+   :width 2048
+   :height 1024
+   :threads 8
+   :filler (diagonal-ramp 2048 1024)))
+
+(mfiano.lib.gfx.image-pipeline:map-image *ramp-plan* pixels (invert-rgb-op))
+```
 
 ## Notes and gotchas
 

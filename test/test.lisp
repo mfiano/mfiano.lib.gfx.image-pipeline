@@ -251,3 +251,74 @@
          (expected (apply-pipeline-sequential plan (copy-seq pixels) pre work post)))
     (ip:map-image-pipeline plan pixels :pre pre :work work :post post :fused t)
     (is (equalp pixels expected))))
+
+(test image-pipeline.make-plan.fill
+  (let ((plan (ip:make-plan :width 16
+                            :height 8
+                            :threads 4
+                            :pixel-format 'pf:rgba8888/u32
+                            :filler #'fill-position)))
+    (is (functionp (ip::plan-decoder plan)))
+    (is (not (eq (ip::plan-decoder plan) (pf:decoder 'pf:rgba8888/u32))))
+    (is (eq (ip::plan-encoder plan) (pf:encoder 'pf:rgba8888/u32)))
+    (signals error (ip:make-plan :width 16 :height 8 :filler 42))))
+
+(test image-pipeline.map-image.fill.full
+  (let* ((plan (ip:make-plan :width 64
+                             :height 128
+                             :threads 16
+                             :pixel-format 'pf:rgba8888/u32
+                             :filler #'fill-position))
+         (pixels (make-pattern-image plan))
+         (expected (apply-fill-sequential 64 128 pixels (list #'op-swap-bump))))
+    (ip:map-image plan pixels #'op-swap-bump)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.map-image.fill.subrect
+  (let* ((plan (ip:make-plan :width 64
+                             :height 128
+                             :threads 16
+                             :pixel-format 'pf:rgba8888/u32
+                             :filler #'fill-position))
+         (pixels (make-pattern-image plan))
+         (expected (apply-fill-sequential 64 128 pixels (list #'op-swap-bump)
+                                          :x1 7 :y1 9 :x2 27 :y2 33)))
+    (ip:map-image plan pixels #'op-swap-bump :x1 7 :y1 9 :x2 27 :y2 33)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.map-image-pipeline.fill.fused-vs-unfused
+  (let* ((plan (ip:make-plan :width 96
+                             :height 128
+                             :threads 8
+                             :pixel-format 'pf:rgba8888/u32
+                             :filler #'fill-position))
+         (pixels-fused (make-pattern-image plan))
+         (pixels-unfused (copy-seq pixels-fused))
+         (pre (pre-add-red 0.2d0))
+         (work (work-mul-green 0.75d0))
+         (post (post-set-alpha 0.5d0))
+         (expected (apply-fill-sequential 96 128 pixels-fused (list pre work post))))
+    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post :fused t)
+    (ip:map-image-pipeline plan pixels-unfused :pre pre :work work :post post :fused nil)
+    (is (equalp pixels-fused expected))
+    (is (equalp pixels-unfused expected))))
+
+(test image-pipeline.map-image-pipeline.fill.subrect
+  (let* ((plan (ip:make-plan :width 96
+                             :height 128
+                             :threads 8
+                             :pixel-format 'pf:rgba8888/u32
+                             :filler #'fill-position))
+         (pixels-fused (make-pattern-image plan))
+         (pixels-unfused (copy-seq pixels-fused))
+         (pre (pre-add-red 0.2d0))
+         (work (work-mul-green 0.75d0))
+         (post (post-set-alpha 0.5d0))
+         (expected (apply-fill-sequential 96 128 pixels-fused (list pre work post)
+                                          :x1 5 :y1 11 :x2 61 :y2 90)))
+    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post :fused t
+                                             :x1 5 :y1 11 :x2 61 :y2 90)
+    (ip:map-image-pipeline plan pixels-unfused :pre pre :work work :post post :fused nil
+                                               :x1 5 :y1 11 :x2 61 :y2 90)
+    (is (equalp pixels-fused expected))
+    (is (equalp pixels-unfused expected))))

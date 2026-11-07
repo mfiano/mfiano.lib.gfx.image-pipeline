@@ -27,16 +27,33 @@
   (encoder (constantly nil) :type function)
   (decoder (constantly nil) :type function))
 
-(defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4))
+(defun make-decoder (pixel-format filler width)
+  (declare (type u16+ width))
+  (if filler
+      (lambda (pixels pixel-index workspace workspace-index count)
+        (declare (optimize (speed 3))
+                 (ignore pixels)
+                 (type function filler)
+                 (type pb:buffer workspace)
+                 (type pb:index pixel-index workspace-index count))
+        (multiple-value-bind (y x) (floor pixel-index width)
+          (loop :for column :below count
+                :for lane-index :of-type pb:index :from workspace-index :by 4
+                :do (funcall filler workspace lane-index (+ x column) y)))
+        (values))
+      (pf:decoder pixel-format)))
+
+(defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4) filler)
   (check-type width u16+)
   (check-type height u16+)
   (check-type threads u8+)
   (check-type pixel-format pf:pixel-format)
+  (check-type filler (or null function))
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
          (row-length (* width 4))
          (workspace (make-f64-array (* row-length (max threads height))))
          (encoder (pf:encoder pixel-format))
-         (decoder (pf:decoder pixel-format)))
+         (decoder (make-decoder pixel-format filler width)))
     (%make-plan :encoder encoder
                 :decoder decoder
                 :width width
