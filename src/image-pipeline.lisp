@@ -37,8 +37,6 @@
          (workspace (make-f64-array (* row-length (max threads height))))
          (encoder (pf:encoder pixel-format))
          (decoder (pf:decoder pixel-format)))
-    (check-type encoder function)
-    (check-type decoder function)
     (%make-plan :encoder encoder
                 :decoder decoder
                 :width width
