@@ -133,17 +133,16 @@
       (let* ((image-y (+ rect-y rect-row-index))
              (image-row-index (* image-y image-width))
              (pixel-index (+ image-row-index rect-x))
-             (workspace-index (* pixel-index workspace-lanes)))
+             (workspace-index (* pixel-index workspace-lanes))
+             (end (+ workspace-index (* rect-width workspace-lanes))))
+        (declare (type fixnum end))
         ,@(when (find :pre phases)
             `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
-        (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
-              :for lane-index :of-type fixnum :from workspace-index :below end :by workspace-lanes
-              ,@(when (find :pre phases)
-                  `(:do (funcall pre workspace lane-index)))
-              ,@(when (find :work phases)
-                  `(:do (funcall work workspace lane-index)))
-              ,@(when (find :post phases)
-                  `(:do (funcall post workspace lane-index))))
+        ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
+                :when (find phase phases)
+                  :collect `(loop :for lane :of-type fixnum :from workspace-index :below end
+                                  :by workspace-lanes
+                                  :do (funcall ,op workspace lane)))
         ,@(when (find :post phases)
             `((funcall encoder workspace workspace-index pixels pixel-index rect-width)))))))
 
