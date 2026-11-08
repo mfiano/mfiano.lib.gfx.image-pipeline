@@ -100,8 +100,8 @@
                (workspace-index (* worker workspace-row-width)))
           (declare (type pb:index workspace-index))
           (funcall decoder pixels pixel-index workspace workspace-index rect-width)
-          (loop :for x :below rect-width
-                :for lane-index :of-type pb:index :from workspace-index :by workspace-lanes
+          (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
+                :for lane-index :of-type fixnum :from workspace-index :below end :by workspace-lanes
                 :do (funcall op workspace lane-index))
           (funcall encoder workspace workspace-index pixels pixel-index rect-width)))
       (values))))
@@ -115,8 +115,8 @@
             (workspace-index (* pixel-index workspace-lanes)))
        ,@(when (find :pre phases)
            `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
-       (loop :for x :below rect-width
-             :for lane-index :of-type pb:index :from workspace-index :by workspace-lanes
+       (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
+             :for lane-index :of-type fixnum :from workspace-index :below end :by workspace-lanes
              ,@(when (find :pre phases)
                  `(:do (funcall pre workspace lane-index)))
              ,@(when (find :work phases)
