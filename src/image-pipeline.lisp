@@ -34,12 +34,9 @@
         (declare (optimize (speed 3))
                  (ignore pixels)
                  (type function filler)
-                 (type pb:buffer workspace)
-                 (type pb:index pixel-index workspace-index count))
+                 (type pb:index pixel-index))
         (multiple-value-bind (y x) (floor pixel-index width)
-          (loop :for column :below count
-                :for lane-index :of-type pb:index :from workspace-index :by 4
-                :do (funcall filler workspace lane-index (+ x column) y)))
+          (funcall filler workspace workspace-index x y count))
         (values))
       (pf:decoder pixel-format)))
 

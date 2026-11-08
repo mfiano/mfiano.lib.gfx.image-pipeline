@@ -211,18 +211,19 @@ The results are more than acceptable for a live coding environment, considering 
 
 ## Generating images
 
-Give `make-plan` a `:filler` function and the plan generates an image instead of processing one. Where it would decode a pixel from `pixels`, it calls your function for that pixel instead. Your ops then run on the generated values in the same pass, and the result is encoded into `pixels`, which is only written to. A noise generator, for example, can have its samples colored and encoded without a second pass over the image.
+Give `make-plan` a `:filler` function and the plan generates an image instead of processing one. Where it would decode a row of `pixels`, it calls your function to fill that row instead. Your ops then run on the generated values in the same pass, and the result is encoded into `pixels`, which is only written to. A noise generator, for example, can have its samples colored and encoded without a second pass over the image.
 
-The function is called like an op, plus the pixel's position: `(funcall filler buffer index x y)`, where `x` and `y` are the pixel's column and row in the image. It must set all four channels of that pixel and must be safe to call from several threads at once, since rows are generated in parallel. It is called once per pixel, so write it with the same care as an op.
+The function is called once per row: `(funcall filler buffer index x y count)`. It fills `count` pixels of `buffer`. The first pixel's channels start at lane `index`, and each following pixel starts 4 lanes after the one before it. `x` and `y` are the first pixel's column and row in the image, so pixel `i` of the row is at column `(+ x i)`. The function must set all four channels of every pixel and must be safe to call from several threads at once, since rows are generated in parallel.
 
 This example generates a diagonal gray ramp and then inverts it with the op from the quick start:
 
 ```lisp
 (defun diagonal-ramp (width height)
   (let ((scale (/ 1d0 (+ width height))))
-    (lambda (buffer index x y)
-      (let ((value (* (+ x y) scale)))
-        (mfiano.lib.gfx.pixel-buffer:set-channels buffer index value value value 1d0))
+    (lambda (buffer index x y count)
+      (dotimes (i count)
+        (let ((value (* (+ x i y) scale)))
+          (mfiano.lib.gfx.pixel-buffer:set-channels buffer (+ index (* i 4)) value value value 1d0)))
       (values))))
 
 (defparameter *ramp-plan*
