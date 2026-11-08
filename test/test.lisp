@@ -288,8 +288,8 @@
                              :pixel-format 'pf:rgba8888/u32
                              :filler #'fill-position))
          (pixels (make-pattern-image plan))
-         (expected (apply-fill-sequential 64 128 pixels (list #'op-swap-bump)
-                                          :x1 7 :y1 9 :x2 27 :y2 33)))
+         (ops (list #'op-swap-bump))
+         (expected (apply-fill-sequential 64 128 pixels ops :x1 7 :y1 9 :x2 27 :y2 33)))
     (ip:map-image plan pixels #'op-swap-bump :x1 7 :y1 9 :x2 27 :y2 33)
     (is (equalp pixels expected))))
 
@@ -332,11 +332,10 @@
          (pre (pre-add-red 0.2d0))
          (work (work-mul-green 0.75d0))
          (post (post-set-alpha 0.5d0))
-         (expected (apply-fill-sequential 96 128 pixels-fused (list pre work post)
-                                          :x1 5 :y1 11 :x2 61 :y2 90)))
-    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post :fused t
-                                             :x1 5 :y1 11 :x2 61 :y2 90)
-    (ip:map-image-pipeline plan pixels-unfused :pre pre :work work :post post :fused nil
-                                               :x1 5 :y1 11 :x2 61 :y2 90)
+         (ops (list pre work post))
+         (args (list :pre pre :work work :post post :x1 5 :y1 11 :x2 61 :y2 90))
+         (expected (apply-fill-sequential 96 128 pixels-fused ops :x1 5 :y1 11 :x2 61 :y2 90)))
+    (apply #'ip:map-image-pipeline plan pixels-fused :fused t args)
+    (apply #'ip:map-image-pipeline plan pixels-unfused :fused nil args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))

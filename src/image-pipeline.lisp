@@ -126,25 +126,26 @@
       (values))))
 
 (defmacro do-pipeline-phases (&rest phases)
-  `(map-rows
-    rect-height
-    (lambda (rect-row-index)
-      (declare (type pb:index rect-row-index))
-      (let* ((image-y (+ rect-y rect-row-index))
-             (image-row-index (* image-y image-width))
-             (pixel-index (+ image-row-index rect-x))
-             (workspace-index (* pixel-index workspace-lanes))
-             (end (+ workspace-index (* rect-width workspace-lanes))))
-        (declare (type fixnum end))
-        ,@(when (find :pre phases)
-            `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
-        ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
-                :when (find phase phases)
-                  :collect `(loop :for lane :of-type fixnum :from workspace-index :below end
-                                  :by workspace-lanes
-                                  :do (funcall ,op workspace lane)))
-        ,@(when (find :post phases)
-            `((funcall encoder workspace workspace-index pixels pixel-index rect-width)))))))
+  (flet ((phase-loop (op)
+           `(loop :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
+                  :do (funcall ,op workspace lane))))
+    `(map-rows
+      rect-height
+      (lambda (rect-row-index)
+        (declare (type pb:index rect-row-index))
+        (let* ((image-y (+ rect-y rect-row-index))
+               (image-row-index (* image-y image-width))
+               (pixel-index (+ image-row-index rect-x))
+               (workspace-index (* pixel-index workspace-lanes))
+               (end (+ workspace-index (* rect-width workspace-lanes))))
+          (declare (type fixnum end))
+          ,@(when (find :pre phases)
+              `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
+          ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
+                  :when (find phase phases)
+                    :collect (phase-loop op))
+          ,@(when (find :post phases)
+              `((funcall encoder workspace workspace-index pixels pixel-index rect-width))))))))
 
 (defun map-image-pipeline (plan pixels &key pre work post fused (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
