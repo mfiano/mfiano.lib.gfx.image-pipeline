@@ -50,6 +50,7 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ```
 
 * `op` is called as `(funcall op workspace lane-index)` for each pixel
+* If `op` is nil, pixels are only decoded and encoded, or generated and encoded with a `filler`
 * Rect is half-open: `[x1,x2) x [y1,y2)`
 * Mutates `pixels` in place
 * Signals an error condition for invalid rects
@@ -235,6 +236,12 @@ This example generates a diagonal gray ramp and then inverts it with the op from
    :filler (diagonal-ramp 2048 1024)))
 
 (mfiano.lib.gfx.image-pipeline:map-image *ramp-plan* pixels (invert-rgb-op))
+```
+
+To keep the ramp as generated, pass `nil` as the op:
+
+```lisp
+(mfiano.lib.gfx.image-pipeline:map-image *ramp-plan* pixels nil)
 ```
 
 ## Notes and gotchas

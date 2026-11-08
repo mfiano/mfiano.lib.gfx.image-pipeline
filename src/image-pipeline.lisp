@@ -79,7 +79,7 @@
 
 (defun map-image (plan pixels op &key (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
-  (declare (type function op))
+  (declare (type (or null function) op))
   (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
@@ -97,9 +97,10 @@
                (workspace-index (* worker workspace-row-width)))
           (declare (type pb:index workspace-index))
           (funcall decoder pixels pixel-index workspace workspace-index rect-width)
-          (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
-                :for lane-index :of-type fixnum :from workspace-index :below end :by workspace-lanes
-                :do (funcall op workspace lane-index))
+          (when op
+            (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
+                  :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
+                  :do (funcall op workspace lane)))
           (funcall encoder workspace workspace-index pixels pixel-index rect-width)))
       (values))))
 

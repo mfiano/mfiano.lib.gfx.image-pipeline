@@ -171,6 +171,13 @@
     (ip:map-image plan pixels (op-identity))
     (is (equalp pixels expected))))
 
+(test image-pipeline.map-image.without-op
+  (let* ((plan (ip:make-plan :width 96 :height 96 :threads 8 :pixel-format 'pf:rgba8888/u32))
+         (pixels (make-pattern-image plan))
+         (expected (copy-seq pixels)))
+    (ip:map-image plan pixels nil)
+    (is (equalp pixels expected))))
+
 (test image-pipeline.map-image.rect-boundary
   (let* ((plan (ip:make-plan :width 64 :height 96 :threads 8 :pixel-format 'pf:rgba8888/u32))
          (pixels (make-pattern-image plan))
@@ -284,6 +291,17 @@
          (expected (apply-fill-sequential 64 128 pixels (list #'op-swap-bump)
                                           :x1 7 :y1 9 :x2 27 :y2 33)))
     (ip:map-image plan pixels #'op-swap-bump :x1 7 :y1 9 :x2 27 :y2 33)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.map-image.fill.without-op
+  (let* ((plan (ip:make-plan :width 64
+                             :height 128
+                             :threads 16
+                             :pixel-format 'pf:rgba8888/u32
+                             :filler #'fill-position))
+         (pixels (make-pattern-image plan))
+         (expected (apply-fill-sequential 64 128 pixels nil :x1 7 :y1 9 :x2 27 :y2 33)))
+    (ip:map-image plan pixels nil :x1 7 :y1 9 :x2 27 :y2 33)
     (is (equalp pixels expected))))
 
 (test image-pipeline.map-image-pipeline.fill.fused-vs-unfused
