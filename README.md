@@ -290,6 +290,7 @@ If you need to tear it down, you can end the kernel (internal accessor):
 
 Runtime:
 
+* `bordeaux-threads`
 * `mfiano.lib.base`
 * `mfiano.lib.gfx.pixel-buffer`
 * `mfiano.lib.gfx.pixel-format`

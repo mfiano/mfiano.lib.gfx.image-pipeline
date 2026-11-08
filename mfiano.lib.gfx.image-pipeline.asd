@@ -5,7 +5,8 @@
   :homepage "https://github.com/mfiano/mfiano.lib.gfx.image-pipeline"
   :encoding :utf-8
   :depends-on
-  (#:mfiano.lib.base
+  (#:bordeaux-threads
+   #:mfiano.lib.base
    #:mfiano.lib.gfx.pixel-buffer
    #:mfiano.lib.gfx.pixel-format
    #:lparallel)
