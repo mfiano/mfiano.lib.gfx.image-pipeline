@@ -11,7 +11,7 @@ You give it:
 It handles:
 
 * decoding packed pixels -> per-pixel `double-float` lanes,
-* running your function on each pixel (optionally in parallel by rows),
+* running your function on each pixel (optionally in parallel),
 * encoding lanes back to packed pixels,
 * optionally doing a 3-phase "pipeline" (pre/work/post), fused or unfused.
 
@@ -41,10 +41,10 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 
 * `pixel-format` defaults to `mfiano.lib.gfx.pixel-format:rgba8888/u32`
 * `width`/`height` are required
-* `threads` controls row-parallelism via `lparallel`
+* `threads` sets how many `lparallel` workers share the work. Workers take the image 2048 pixels at a time, whatever its shape, so a single long row or column is shared among them like any other image
 * `filler` makes the plan generate pixels instead of decoding them; see [Generating images](#generating-images)
 * `fused` defaults to true and sets how `map-image-pipeline` runs with this plan:
-  * True: each row is decoded, run through `pre`, `work` and `post`, and encoded in one pass. The workspace holds one row per thread.
+  * True: each run of 2048 pixels is decoded, run through `pre`, `work` and `post`, and encoded in one pass. The workspace holds 2048 pixels per thread, 64 KB each.
   * Nil: three passes over the whole image, `pre`, then `work`, then `post`, which spatially dependent work such as convolution needs. The workspace holds the whole image at 32 bytes per pixel.
 * Making a plan writes its whole workspace once, so the first map with it runs as fast as later ones
 
@@ -239,9 +239,9 @@ The results are more than acceptable for a live coding environment, considering 
 
 ## Generating images
 
-Give `make-plan` a `:filler` function and the plan generates an image instead of processing one. Where it would decode a row of `pixels`, it calls your function to fill that row instead. Your ops then run on the generated values in the same pass, and the result is encoded into `pixels`, which is only written to. A noise generator, for example, can have its samples colored and encoded without a second pass over the image.
+Give `make-plan` a `:filler` function and the plan generates an image instead of processing one. Where it would decode `pixels`, it calls your function to fill those pixels instead. Your ops then run on the generated values in the same pass, and the result is encoded into `pixels`, which is only written to. A noise generator, for example, can have its samples colored and encoded without a second pass over the image.
 
-The function is called once per row: `(funcall filler buffer index x y count)`. It fills `count` pixels of `buffer`. The first pixel's channels start at lane `index`, and each following pixel starts 4 lanes after the one before it. `x` and `y` are the first pixel's column and row in the image, so pixel `i` of the row is at column `(+ x i)`. The function must set all four channels of every pixel and must be safe to call from several threads at once, since rows are generated in parallel.
+The function is called as `(funcall filler buffer index x y count)` to fill `count` consecutive pixels of one row. A row can be filled by several calls, and one call never crosses into the next row. The first pixel's channels start at lane `index`, and each following pixel starts 4 lanes after the one before it. `x` and `y` are the first pixel's column and row in the image, so pixel `i` of the call is at column `(+ x i)`. The function must set all four channels of every pixel and must be safe to call from several threads at once, since pixels are generated in parallel.
 
 This example generates a diagonal gray ramp and then inverts it with the op from the quick start:
 
@@ -288,11 +288,11 @@ Invalid rects signal an error (by design).
 
 ### Determinism
 
-Row parallelism means your `op` should be:
+Parallelism means your `op` should be:
 
 * pure with respect to external state (or at least thread-safe),
 * only mutate the pixel it's handed (the workspace slice),
-* not depend on the order rows are processed.
+* not depend on the order pixels are processed.
 
 If you want something order-dependent (dithering with an error buffer, convolution/CA neighborhoods, etc.), you probably want a different abstraction than 'map pixels independently', but see "Future work" below.
 

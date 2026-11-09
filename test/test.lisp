@@ -13,7 +13,7 @@
     (is (= (ip::plan-threads plan) threads))
     (is (functionp (ip::plan-encoder plan)))
     (is (functionp (ip::plan-decoder plan)))
-    (is (= (length (ip::plan-workspace plan)) (* width 4 threads)))))
+    (is (= (length (ip::plan-workspace plan)) (* (span-length) 4 threads)))))
 
 (test image-pipeline.map-image.u32.full
   (let* ((width 64)
@@ -154,7 +154,7 @@
                              :threads threads
                              :pixel-format 'pf:rgba8888/u32)))
     (let ((workspace (ip::plan-workspace plan))
-          (expected-length (* width 4 threads)))
+          (expected-length (* (span-length) 4 threads)))
       (is (= (ip::plan-width plan) width))
       (is (= (ip::plan-height plan) height))
       (is (= (ip::plan-threads plan) threads))
@@ -426,3 +426,39 @@
         (setf escaped plan)
         (return-from exit)))
     (is (ip::plan-canceled escaped))))
+
+(test image-pipeline.spans.row-longer-than-a-span
+  (destructuring-bind (expected &rest results) (pipeline-results (+ (* 2 (span-length)) 5) 2)
+    (dolist (result results)
+      (is (equalp result expected)))))
+
+(test image-pipeline.spans.cross-rows
+  (destructuring-bind (expected &rest results) (pipeline-results 3 (+ (span-length) 2))
+    (dolist (result results)
+      (is (equalp result expected)))))
+
+(test image-pipeline.spans.narrow-subrect
+  (let ((height (span-length)))
+    (destructuring-bind (expected &rest results)
+        (pipeline-results 7 height :x1 2 :y1 1 :x2 5 :y2 (1- height))
+      (dolist (result results)
+        (is (equalp result expected))))))
+
+(test image-pipeline.spans.fill.row-longer-than-a-span
+  (destructuring-bind (expected &rest results)
+      (pipeline-results (+ (* 2 (span-length)) 5) 2 :filler #'fill-position)
+    (dolist (result results)
+      (is (equalp result expected)))))
+
+(test image-pipeline.spans.fill.cross-rows
+  (destructuring-bind (expected &rest results)
+      (pipeline-results 3 (+ (span-length) 2) :filler #'fill-position)
+    (dolist (result results)
+      (is (equalp result expected)))))
+
+(test image-pipeline.spans.fill.narrow-subrect
+  (let ((height (span-length)))
+    (destructuring-bind (expected &rest results)
+        (pipeline-results 7 height :filler #'fill-position :x1 2 :y1 1 :x2 5 :y2 (1- height))
+      (dolist (result results)
+        (is (equalp result expected))))))

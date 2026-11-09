@@ -32,31 +32,34 @@
   (fused t :type boolean)
   (canceled nil :type boolean))
 
-(defun map-rows (count function)
+(define-constant +span-length+ 2048)
+
+(defun map-spans (count span-length function)
   (declare (optimize (speed 3))
-           (type u16 count)
+           (type (uint 40) count)
+           (type (integer 1 #.(expt 2 20)) span-length)
            (type function function))
   (let ((workers (lp:kernel-worker-count))
         (next (bt:make-atomic-integer))
         (channel (lp:make-channel)))
     (declare (type u8+ workers))
-    (flet ((claim-rows ()
-             (loop :for row :of-type fixnum := (1- (bt:atomic-integer-incf next))
-                   :while (< row count)
-                   :do (funcall function row))))
+    (flet ((claim-spans ()
+             (loop :for claim :of-type (integer 1 #.(expt 2 40)) := (bt:atomic-integer-incf next)
+                   :for start :of-type (uint 60) := (* (1- claim) span-length)
+                   :while (< start count)
+                   :do (funcall function start (min count (+ start span-length))))))
       (dotimes (worker workers)
-        (lp:submit-task channel #'claim-rows))
+        (lp:submit-task channel #'claim-spans))
       (dotimes (worker workers)
         (lp:receive-result channel)))
     (values)))
 
-(defun prefault-workspace (workspace kernel row-length)
+(defun prefault-workspace (workspace kernel)
   (let ((lp:*kernel* kernel))
-    (map-rows
-     (floor (length workspace) row-length)
-     (lambda (row)
-       (let ((start (* row row-length)))
-         (fill workspace 0d0 :start start :end (+ start row-length)))))))
+    (map-spans (length workspace)
+               (* +span-length+ 4)
+               (lambda (start end)
+                 (fill workspace 0d0 :start start :end end)))))
 
 (defun make-decoder (pixel-format filler width)
   (declare (type u16+ width))
@@ -65,9 +68,15 @@
         (declare (optimize (speed 3))
                  (ignore pixels)
                  (type function filler)
-                 (type pb:index pixel-index))
-        (multiple-value-bind (y x) (floor pixel-index width)
-          (funcall filler workspace workspace-index x y count))
+                 (type pb:index pixel-index workspace-index)
+                 (type fixnum count))
+        (while (plusp count)
+          (multiple-value-bind (y x) (floor pixel-index width)
+            (let ((run (min count (- width x))))
+              (funcall filler workspace workspace-index x y run)
+              (incf pixel-index run)
+              (incf workspace-index (* run 4))
+              (decf count run))))
         (values))
       (pf:decoder pixel-format)))
 
@@ -82,12 +91,12 @@
   (check-type fused boolean)
   (check-type filler (or null function))
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
-         (row-length (* width 4))
-         (rows (if fused threads (max threads height)))
-         (workspace (make-f64-array (* row-length rows)))
+         (workspace (make-f64-array (if fused
+                                        (* threads +span-length+ 4)
+                                        (* width (max threads height) 4))))
          (encoder (pf:encoder pixel-format))
          (decoder (make-decoder pixel-format filler width)))
-    (prefault-workspace workspace kernel row-length)
+    (prefault-workspace workspace kernel)
     (%make-plan :encoder encoder
                 :decoder decoder
                 :width width
@@ -149,6 +158,33 @@
       (error "pixels has ~d elements, but the plan's image needs ~d" (length pixels) needed))
     (values)))
 
+(defmacro span-runs ((pixel-index workspace-index count) per-worker &body body)
+  (with-gensyms (start end position worker first-row first-column row column)
+    `(lambda (,start ,end)
+       (declare (type u32 ,start ,end))
+       (let ,(when per-worker
+               `((,worker (or (lp:kernel-worker-index) 0))))
+         ,@(when per-worker
+             `((declare (type u8 ,worker))))
+         (multiple-value-bind (,first-row ,first-column) (floor ,start rect-width)
+           (loop :with ,position :of-type u32 := ,start
+                 :for ,row :of-type u32 :from ,first-row
+                 :for ,column :of-type u16 := ,first-column :then 0
+                 :while (< ,position ,end)
+                 :do (let* ((,count (if (= rect-width image-width)
+                                        (- ,end ,position)
+                                        (min (- ,end ,position) (- rect-width ,column))))
+                            (,pixel-index (+ (* (+ rect-y ,row) image-width) rect-x ,column))
+                            (,workspace-index
+                              ,(if per-worker
+                                   `(* (+ (* ,worker +span-length+) (- ,position ,start))
+                                       workspace-lanes)
+                                   `(* ,pixel-index workspace-lanes))))
+                       (declare (type fixnum ,count)
+                                (type pb:index ,pixel-index ,workspace-index))
+                       ,@body
+                       (incf ,position ,count))))))))
+
 (defun map-image (plan pixels op &key (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
   (declare (type (or null function) op))
@@ -158,52 +194,37 @@
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
            (workspace-lanes 4)
-           (workspace-row-width (* image-width workspace-lanes))
            (encoder (plan-encoder plan))
            (decoder (plan-decoder plan))
            (lp:*kernel* (plan-kernel plan)))
-      (map-rows
-       rect-height
-       (lambda (row-offset)
-         (declare (type u16 row-offset))
-         (let* ((image-y (+ rect-y row-offset))
-                (image-row-index (* image-y image-width))
-                (pixel-index (+ image-row-index rect-x))
-                (worker (or (lp:kernel-worker-index) 0))
-                (workspace-index (* worker workspace-row-width)))
-           (declare (type pb:index workspace-index))
-           (funcall decoder pixels pixel-index workspace workspace-index rect-width)
-           (when op
-             (loop :with end :of-type fixnum := (+ workspace-index (* rect-width workspace-lanes))
-                   :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
-                   :do (funcall op workspace lane)))
-           (funcall encoder workspace workspace-index pixels pixel-index rect-width))))
+      (map-spans
+       (* rect-width rect-height)
+       +span-length+
+       (span-runs (pixel-index workspace-index count) t
+         (funcall decoder pixels pixel-index workspace workspace-index count)
+         (when op
+           (loop :with end :of-type fixnum := (+ workspace-index (* count workspace-lanes))
+                 :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
+                 :do (funcall op workspace lane)))
+         (funcall encoder workspace workspace-index pixels pixel-index count)))
       (values))))
 
-(defmacro do-pipeline-phases ((&rest phases) &key worker-rows)
+(defmacro do-pipeline-phases ((&rest phases) &key per-worker)
   (flet ((phase-loop (op)
-           `(loop :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
+           `(loop :with end :of-type fixnum := (+ workspace-index (* count workspace-lanes))
+                  :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
                   :do (funcall ,op workspace lane))))
-    `(map-rows
-      rect-height
-      (lambda (rect-row-index)
-        (declare (type pb:index rect-row-index))
-        (let* ((image-y (+ rect-y rect-row-index))
-               (image-row-index (* image-y image-width))
-               (pixel-index (+ image-row-index rect-x))
-               (workspace-index ,(if worker-rows
-                                     '(* (or (lp:kernel-worker-index) 0) workspace-row-width)
-                                     '(* pixel-index workspace-lanes)))
-               (end (+ workspace-index (* rect-width workspace-lanes))))
-          (declare (type pb:index workspace-index)
-                   (type fixnum end))
-          ,@(when (find :pre phases)
-              `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
-          ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
-                  :when (find phase phases)
-                    :collect (phase-loop op))
-          ,@(when (find :post phases)
-              `((funcall encoder workspace workspace-index pixels pixel-index rect-width))))))))
+    `(map-spans
+      (* rect-width rect-height)
+      +span-length+
+      (span-runs (pixel-index workspace-index count) ,per-worker
+        ,@(when (find :pre phases)
+            `((funcall decoder pixels pixel-index workspace workspace-index count)))
+        ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
+                :when (find phase phases)
+                  :collect (phase-loop op))
+        ,@(when (find :post phases)
+            `((funcall encoder workspace workspace-index pixels pixel-index count)))))))
 
 (defun map-image-pipeline (plan pixels &key pre work post (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
@@ -214,12 +235,11 @@
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
            (workspace-lanes 4)
-           (workspace-row-width (* image-width workspace-lanes))
            (encoder (plan-encoder plan))
            (decoder (plan-decoder plan))
            (lp:*kernel* (plan-kernel plan)))
       (if (plan-fused plan)
-          (do-pipeline-phases (:pre :work :post) :worker-rows t)
+          (do-pipeline-phases (:pre :work :post) :per-worker t)
           (progn
             (do-pipeline-phases (:pre))
             (do-pipeline-phases (:work))
