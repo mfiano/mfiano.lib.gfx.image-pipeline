@@ -8,9 +8,11 @@
    (#:pf #:mfiano.lib.gfx.pixel-format))
   (:use #:mfiano.lib.base.util)
   (:export
+   #:cancel-plan
    #:make-plan
    #:map-image
-   #:map-image-pipeline))
+   #:map-image-pipeline
+   #:with-plan))
 
 (in-package #:mfiano.lib.gfx.image-pipeline)
 
@@ -26,7 +28,9 @@
   (encoder (constantly nil) :type function)
   (decoder (constantly nil) :type function)
   (storage :u32 :type pf:storage)
-  (pixels-length 0 :type fixnum))
+  (pixels-length 0 :type fixnum)
+  (fused t :type boolean)
+  (canceled nil :type boolean))
 
 (defun map-rows (count function)
   (declare (optimize (speed 3))
@@ -70,15 +74,17 @@
 (defun pixel-array-length (pixel-format width height)
   (* width height (if (eq (pf:layout pixel-format) :packed) 1 (pf:channel-count pixel-format))))
 
-(defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4) filler)
+(defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4) (fused t) filler)
+  (check-type pixel-format pf:pixel-format)
   (check-type width u16+)
   (check-type height u16+)
   (check-type threads u8+)
-  (check-type pixel-format pf:pixel-format)
+  (check-type fused boolean)
   (check-type filler (or null function))
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
          (row-length (* width 4))
-         (workspace (make-f64-array (* row-length (max threads height))))
+         (rows (if fused threads (max threads height)))
+         (workspace (make-f64-array (* row-length rows)))
          (encoder (pf:encoder pixel-format))
          (decoder (make-decoder pixel-format filler width)))
     (prefault-workspace workspace kernel row-length)
@@ -90,7 +96,26 @@
                 :kernel kernel
                 :workspace workspace
                 :storage (pf:storage pixel-format)
-                :pixels-length (pixel-array-length pixel-format width height))))
+                :pixels-length (pixel-array-length pixel-format width height)
+                :fused fused)))
+
+(defun cancel-plan (plan)
+  (unless (plan-canceled plan)
+    (let ((lp:*kernel* (plan-kernel plan)))
+      (mapc #'bordeaux-threads:join-thread (lp:end-kernel :wait t))
+      (setf (plan-workspace plan) (make-f64-array 0)
+            (plan-canceled plan) t)))
+  (values))
+
+(defmacro with-plan ((plan &rest args) &body body)
+  `(let ((,plan (make-plan ,@args)))
+     (unwind-protect (progn ,@body)
+       (cancel-plan ,plan))))
+
+(defun check-plan (plan)
+  (when (plan-canceled plan)
+    (error "plan was canceled"))
+  (values))
 
 (define-ftype check-rect (u16+ u16+ u16 u16 (or u16 null) (or u16 null)) (values))
 (declaim (inline check-rect))
@@ -127,6 +152,7 @@
 (defun map-image (plan pixels op &key (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
   (declare (type (or null function) op))
+  (check-plan plan)
   (check-pixels plan pixels)
   (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
     (let* ((image-width (plan-width plan))
@@ -179,9 +205,10 @@
           ,@(when (find :post phases)
               `((funcall encoder workspace workspace-index pixels pixel-index rect-width))))))))
 
-(defun map-image-pipeline (plan pixels &key pre work post fused (x1 0) (y1 0) x2 y2)
+(defun map-image-pipeline (plan pixels &key pre work post (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
   (declare (type function pre work post))
+  (check-plan plan)
   (check-pixels plan pixels)
   (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
     (let* ((image-width (plan-width plan))
@@ -191,7 +218,7 @@
            (encoder (plan-encoder plan))
            (decoder (plan-decoder plan))
            (lp:*kernel* (plan-kernel plan)))
-      (if fused
+      (if (plan-fused plan)
           (do-pipeline-phases (:pre :work :post) :worker-rows t)
           (progn
             (do-pipeline-phases (:pre))

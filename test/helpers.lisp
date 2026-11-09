@@ -2,6 +2,7 @@
 
 (define-package #:mfiano.lib.gfx.image-pipeline/test
   (:local-nicknames
+   (#:bt #:bordeaux-threads-2)
    (#:ip #:mfiano.lib.gfx.image-pipeline)
    (#:pb #:mfiano.lib.gfx.pixel-buffer)
    (#:pf #:mfiano.lib.gfx.pixel-format)
@@ -201,3 +202,10 @@
     (dolist (op ops)
       (apply-op-rect buffer width x1 y1 x2 y2 op))
     (encode-u32-rgba buffer width height)))
+
+(defun plan-thread-count ()
+  (count "Pixel plan" (bt:all-threads) :key #'bt:thread-name :test #'equal))
+
+(defun error-message (function)
+  (handler-case (progn (funcall function) nil)
+    (error (condition) (princ-to-string condition))))

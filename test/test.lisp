@@ -13,7 +13,7 @@
     (is (= (ip::plan-threads plan) threads))
     (is (functionp (ip::plan-encoder plan)))
     (is (functionp (ip::plan-decoder plan)))
-    (is (= (length (ip::plan-workspace plan)) (* width 4 (max threads height))))))
+    (is (= (length (ip::plan-workspace plan)) (* width 4 threads)))))
 
 (test image-pipeline.map-image.u32.full
   (let* ((width 64)
@@ -84,7 +84,8 @@
          (plan-unfused (ip:make-plan :pixel-format 'pf:rgba8888/u32
                                      :width width
                                      :height height
-                                     :threads threads))
+                                     :threads threads
+                                     :fused nil))
          (input-buffer (make-canonical-buffer width height))
          (input-pixels (encode-u32-rgba input-buffer width height))
          (pixels-fused (copy-seq input-pixels))
@@ -99,14 +100,12 @@
                            pixels-fused
                            :pre #'op-pre
                            :work #'op-work
-                           :post #'op-post
-                           :fused t)
+                           :post #'op-post)
     (ip:map-image-pipeline plan-unfused
                            pixels-unfused
                            :pre #'op-pre
                            :work #'op-work
-                           :post #'op-post
-                           :fused nil)
+                           :post #'op-post)
     (is (equalp pixels-fused pixels-unfused))
     (is (equalp pixels-fused expected-pixels))))
 
@@ -121,7 +120,8 @@
          (plan-unfused (ip:make-plan :pixel-format 'pf:rgba8888/u8
                                      :width width
                                      :height height
-                                     :threads threads))
+                                     :threads threads
+                                     :fused nil))
          (input-buffer (make-canonical-buffer width height))
          (input-pixels (encode-u8-rgba input-buffer width height))
          (pixels-fused (copy-seq input-pixels))
@@ -136,14 +136,12 @@
                            pixels-fused
                            :pre #'op-pre
                            :work #'op-work
-                           :post #'op-post
-                           :fused t)
+                           :post #'op-post)
     (ip:map-image-pipeline plan-unfused
                            pixels-unfused
                            :pre #'op-pre
                            :work #'op-work
-                           :post #'op-post
-                           :fused nil)
+                           :post #'op-post)
     (is (equalp pixels-fused pixels-unfused))
     (is (equalp pixels-fused expected-pixels))))
 
@@ -156,7 +154,7 @@
                              :threads threads
                              :pixel-format 'pf:rgba8888/u32)))
     (let ((workspace (ip::plan-workspace plan))
-          (expected-length (* width 4 (max threads height))))
+          (expected-length (* width 4 threads)))
       (is (= (ip::plan-width plan) width))
       (is (= (ip::plan-height plan) height))
       (is (= (ip::plan-threads plan) threads))
@@ -230,6 +228,7 @@
 
 (test image-pipeline.map-image-pipeline.fused-vs-unfused
   (let* ((plan (ip:make-plan :width 96 :height 128 :threads 8 :pixel-format 'pf:rgba8888/u32))
+         (plan-unfused (ip:make-plan :width 96 :height 128 :threads 8 :fused nil))
          (pixels-fused (make-pattern-image plan))
          (pixels-unfused (copy-seq pixels-fused))
          (pixels-map-image (copy-seq pixels-fused))
@@ -242,8 +241,8 @@
                (funcall post buffer lane-index)
                (values)))
          (expected (apply-pipeline-sequential plan (copy-seq pixels-fused) pre work post)))
-    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post :fused t)
-    (ip:map-image-pipeline plan pixels-unfused :pre pre :work work :post post :fused nil)
+    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post)
+    (ip:map-image-pipeline plan-unfused pixels-unfused :pre pre :work work :post post)
     (ip:map-image plan pixels-map-image op)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))
@@ -256,11 +255,12 @@
          (work (work-mul-green 1.1d0))
          (post (post-set-alpha 1.5d0))
          (expected (apply-pipeline-sequential plan (copy-seq pixels) pre work post)))
-    (ip:map-image-pipeline plan pixels :pre pre :work work :post post :fused t)
+    (ip:map-image-pipeline plan pixels :pre pre :work work :post post)
     (is (equalp pixels expected))))
 
 (test image-pipeline.map-image-pipeline.subrect
   (let* ((plan (ip:make-plan :width 96 :height 128 :threads 8 :pixel-format 'pf:rgba8888/u32))
+         (plan-unfused (ip:make-plan :width 96 :height 128 :threads 8 :fused nil))
          (pixels-fused (make-pattern-image plan))
          (pixels-unfused (copy-seq pixels-fused))
          (pre (pre-add-red 0.2d0))
@@ -269,8 +269,8 @@
          (rect (list :x1 5 :y1 11 :x2 61 :y2 90))
          (args (list* :pre pre :work work :post post rect))
          (expected (apply #'apply-pipeline-sequential plan pixels-fused pre work post rect)))
-    (apply #'ip:map-image-pipeline plan pixels-fused :fused t args)
-    (apply #'ip:map-image-pipeline plan pixels-unfused :fused nil args)
+    (apply #'ip:map-image-pipeline plan pixels-fused args)
+    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -325,14 +325,19 @@
                              :threads 8
                              :pixel-format 'pf:rgba8888/u32
                              :filler #'fill-position))
+         (plan-unfused (ip:make-plan :width 96
+                                     :height 128
+                                     :threads 8
+                                     :filler #'fill-position
+                                     :fused nil))
          (pixels-fused (make-pattern-image plan))
          (pixels-unfused (copy-seq pixels-fused))
          (pre (pre-add-red 0.2d0))
          (work (work-mul-green 0.75d0))
          (post (post-set-alpha 0.5d0))
          (expected (apply-fill-sequential 96 128 pixels-fused (list pre work post))))
-    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post :fused t)
-    (ip:map-image-pipeline plan pixels-unfused :pre pre :work work :post post :fused nil)
+    (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post)
+    (ip:map-image-pipeline plan-unfused pixels-unfused :pre pre :work work :post post)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -342,6 +347,11 @@
                              :threads 8
                              :pixel-format 'pf:rgba8888/u32
                              :filler #'fill-position))
+         (plan-unfused (ip:make-plan :width 96
+                                     :height 128
+                                     :threads 8
+                                     :filler #'fill-position
+                                     :fused nil))
          (pixels-fused (make-pattern-image plan))
          (pixels-unfused (copy-seq pixels-fused))
          (pre (pre-add-red 0.2d0))
@@ -350,8 +360,8 @@
          (ops (list pre work post))
          (args (list :pre pre :work work :post post :x1 5 :y1 11 :x2 61 :y2 90))
          (expected (apply-fill-sequential 96 128 pixels-fused ops :x1 5 :y1 11 :x2 61 :y2 90)))
-    (apply #'ip:map-image-pipeline plan pixels-fused :fused t args)
-    (apply #'ip:map-image-pipeline plan pixels-unfused :fused nil args)
+    (apply #'ip:map-image-pipeline plan pixels-fused args)
+    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -380,3 +390,39 @@
     (let ((expected (copy-seq pixels)))
       (ip:map-image plan pixels nil)
       (is (equalp pixels expected)))))
+
+(test image-pipeline.make-plan.unfused-workspace
+  (let ((plan (ip:make-plan :width 16 :height 64 :threads 4 :fused nil)))
+    (is (= (length (ip::plan-workspace plan)) (* 16 4 64)))))
+
+(test image-pipeline.cancel-plan.ends-threads
+  (let* ((before (plan-thread-count))
+         (plan (ip:make-plan :width 8 :height 8 :threads 4)))
+    (is (= (plan-thread-count) (+ before 4)))
+    (ip:cancel-plan plan)
+    (is (= (plan-thread-count) before))
+    (is (zerop (length (ip::plan-workspace plan))))))
+
+(test image-pipeline.cancel-plan.twice
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 2)))
+    (ip:cancel-plan plan)
+    (ip:cancel-plan plan)
+    (is (ip::plan-canceled plan))))
+
+(test image-pipeline.cancel-plan.refuses-mappers
+  (let* ((plan (ip:make-plan :width 8 :height 8 :threads 2))
+         (pixels (make-u32-array 64))
+         (op (op-identity))
+         (map-image (lambda () (ip:map-image plan pixels op)))
+         (pipeline (lambda () (ip:map-image-pipeline plan pixels :pre op :work op :post op))))
+    (ip:cancel-plan plan)
+    (is (equal (error-message map-image) "plan was canceled"))
+    (is (equal (error-message pipeline) "plan was canceled"))))
+
+(test image-pipeline.with-plan.cancels-on-exit
+  (let ((escaped nil))
+    (block exit
+      (ip:with-plan (plan :width 8 :height 8 :threads 2)
+        (setf escaped plan)
+        (return-from exit)))
+    (is (ip::plan-canceled escaped))))

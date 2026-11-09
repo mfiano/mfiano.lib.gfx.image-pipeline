@@ -5,7 +5,7 @@
 You give it:
 
 * an image buffer (packed pixels in some `mfiano.lib.gfx.pixel-format`),
-* a `plan` (dimensions, pixel-format codec, threads, workspace),
+* a `plan` (dimensions, pixel-format codec, threads, pipeline mode, workspace),
 * and an operation that mutates pixels via a `mfiano.lib.gfx.pixel-buffer` view (4 lanes of `double-float`s per pixel).
 
 It handles:
@@ -19,12 +19,13 @@ It handles:
 
 ### Pixel storage
 
-`image-pipeline` works on images stored as either:
+`image-pipeline` works on images stored in the array type of the plan's pixel format, which follows from the format's storage:
 
-* `(simple-array (unsigned-byte 8) (*))` (for formats like `mfiano.lib.gfx.pixel-format:rgba8888/u8`, `mfiano.lib.gfx.pixel-format:rgb888/u8`, etc)
-* `(simple-array (unsigned-byte 32) (*))` (for formats like `mfiano.lib.gfx.pixel-format:rgba8888/u32`, `mfiano.lib.gfx.pixel-format:abgr8888/u32`, etc)
-
-Which one you use depends on the pixel format you built the plan with.
+* `:u8`: `(simple-array (unsigned-byte 8) (*))`, for formats like `mfiano.lib.gfx.pixel-format:rgba8888/u8` and `mfiano.lib.gfx.pixel-format:rgb888/u8`
+* `:u16`: `(simple-array (unsigned-byte 16) (*))`, for formats like `mfiano.lib.gfx.pixel-format:ga1616/u16`
+* `:u32`: `(simple-array (unsigned-byte 32) (*))`, for formats like `mfiano.lib.gfx.pixel-format:rgba8888/u32` and `mfiano.lib.gfx.pixel-format:abgr8888/u32`
+* `:f32`: `(simple-array single-float (*))`, for formats like `mfiano.lib.gfx.pixel-format:rgba/f32`
+* `:f64`: `(simple-array double-float (*))`, for formats like `mfiano.lib.gfx.pixel-format:rgba/f64`
 
 ### Workspace representation
 
@@ -35,13 +36,36 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ### `make-plan`
 
 ```lisp
-(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads filler) => plan
+(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads filler fused) => plan
 ```
 
 * `pixel-format` defaults to `mfiano.lib.gfx.pixel-format:rgba8888/u32`
 * `width`/`height` are required
 * `threads` controls row-parallelism via `lparallel`
 * `filler` makes the plan generate pixels instead of decoding them; see [Generating images](#generating-images)
+* `fused` defaults to true and sets how `map-image-pipeline` runs with this plan:
+  * True: each row is decoded, run through `pre`, `work` and `post`, and encoded in one pass. The workspace holds one row per thread.
+  * Nil: three passes over the whole image, `pre`, then `work`, then `post`, which spatially dependent work such as convolution needs. The workspace holds the whole image at 32 bytes per pixel.
+* Making a plan writes its whole workspace once, so the first map with it runs as fast as later ones
+
+### `cancel-plan`
+
+```lisp
+(mfiano.lib.gfx.image-pipeline:cancel-plan plan) => (values)
+```
+
+* Ends the plan's threads and releases its workspace
+* Canceling a canceled plan does nothing
+* Mapping with a canceled plan signals an error condition; a canceled plan never starts again
+* Canceling a plan while another thread maps with it is not supported
+
+### `with-plan`
+
+```lisp
+(mfiano.lib.gfx.image-pipeline:with-plan (plan &rest make-plan-args) &body body)
+```
+
+* Makes a plan from `make-plan-args`, binds it to `plan` around `body`, and cancels it however `body` exits
 
 ### `map-image`
 
@@ -59,12 +83,11 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ### `map-image-pipeline`
 
 ```lisp
-(mfiano.lib.gfx.image-pipeline:map-image-pipeline plan pixels &key pre work post fused x1 y1 x2 y2) => (values)
+(mfiano.lib.gfx.image-pipeline:map-image-pipeline plan pixels &key pre work post x1 y1 x2 y2) => (values)
 ```
 
 * `pre`, `work`, `post` are each called like `op` above
-* If `fused` is true, it does decode -> pre/work/post -> encode in one pass
-* If `fused` is nil, it does three passes over the workspace: pre, then work, then post; slower but required for spatially dependent image work (convolution, etc.)
+* Runs fused or unfused, as the plan was made; see `make-plan`
 * Signals the same error conditions as `map-image` for invalid rects and `pixels`
 
 ## Quick start
@@ -132,11 +155,10 @@ Example:
   pixels
   :pre (pre-add-red 0.2d0)
   :work (work-mul-green 0.75d0)
-  :post (post-set-alpha 2d0)
-  :fused t)
+  :post (post-set-alpha 2d0))
 ```
 
-If you want the 'classic pipeline semantics' (three passes), set `:fused nil`.
+If you want the 'classic pipeline semantics' (three passes), make the plan with `:fused nil`.
 
 ## Advanced example
 
@@ -168,7 +190,7 @@ Another common workflow is to perform a color-grading operation that involves wo
 
 ;; Set up and run a pipeline which:
 ;; - prepares a pixel array by decoding a 3250x3250 RGBA image (10.5M pixels, 42.25MiB of packed channels)
-;; - creates a plan with an image-sized workspace and 24 threads
+;; - creates a plan with 24 threads
 ;; - run a fused pipeline over each of the ~10.5M pixels that runs pre, work, and post ops in sequence
 ;; - times the results
 ;; - writes the new image out to disk
@@ -182,7 +204,7 @@ Another common workflow is to perform a color-grading operation that involves wo
          (h (mfiano.lib.codec.qoi:height image))
          (channels (mfiano.lib.codec.qoi:channels image))
          (pixels (mfiano.lib.codec.qoi:pixels image))
-         ;; create a plan with a workspace the size of the image, using 24 threads (change for your hardware)
+         ;; create a plan using 24 threads (change for your hardware)
          (plan (mfiano.lib.gfx.image-pipeline:make-plan
                 :pixel-format pixel-format
                 :width w
@@ -197,8 +219,7 @@ Another common workflow is to perform a color-grading operation that involves wo
       pixels
       :pre #'pre-op
       :work #'work-op
-      :post #'post-op
-      :fused t))
+      :post #'post-op))
     ;; write the modified image out to disk
     (mfiano.lib.codec.qoi:encode-file pixels "~/out.qoi" :width w :height h :channels channels)
     (values)))
@@ -275,16 +296,9 @@ Row parallelism means your `op` should be:
 
 If you want something order-dependent (dithering with an error buffer, convolution/CA neighborhoods, etc.), you probably want a different abstraction than 'map pixels independently', but see "Future work" below.
 
-### Kernel lifetime
+### Plan lifetime
 
-A `plan` owns an `lparallel` kernel. In long-running programs, you typically create a plan once and reuse it.
-
-If you need to tear it down, you can end the kernel (internal accessor):
-
-```lisp
-(let ((lparallel:*kernel* (mfiano.lib.gfx.image-pipeline::plan-kernel *plan*)))
-  (lparallel:end-kernel :wait t))
-```
+A `plan` owns worker threads and its workspace. Make a plan once and map with it as often as you like, then cancel it with `cancel-plan` when you are done, or scope it with `with-plan`. A plan that becomes unreachable without being canceled has its workspace reclaimed by the garbage collector, but its threads keep running.
 
 ## Performance tips (the "don't accidentally make it slow" list)
 
