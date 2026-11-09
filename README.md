@@ -54,6 +54,7 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 * Rect is half-open: `[x1,x2) x [y1,y2)`
 * Mutates `pixels` in place
 * Signals an error condition for invalid rects
+* Signals an error condition if `pixels` is not the array type of the plan's pixel format, or is too short for the plan's image
 
 ### `map-image-pipeline`
 
@@ -64,6 +65,7 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 * `pre`, `work`, `post` are each called like `op` above
 * If `fused` is true, it does decode -> pre/work/post -> encode in one pass
 * If `fused` is nil, it does three passes over the workspace: pre, then work, then post; slower but required for spatially dependent image work (convolution, etc.)
+* Signals the same error conditions as `map-image` for invalid rects and `pixels`
 
 ## Quick start
 

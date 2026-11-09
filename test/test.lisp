@@ -354,3 +354,29 @@
     (apply #'ip:map-image-pipeline plan pixels-unfused :fused nil args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
+
+(test image-pipeline.map-image.bad-pixels
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 4 :pixel-format 'pf:rgba8888/u32)))
+    (signals error (ip:map-image plan (make-array 64) nil))))
+
+(test image-pipeline.map-image.wrong-storage
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 4 :pixel-format 'pf:rgba8888/u32)))
+    (signals error (ip:map-image plan (make-u8-array (* 8 8 4)) nil))))
+
+(test image-pipeline.map-image.short-pixels
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 4 :pixel-format 'pf:rgba8888/u8)))
+    (signals error (ip:map-image plan (make-u8-array (* 8 8)) nil))))
+
+(test image-pipeline.map-image-pipeline.bad-pixels
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 4 :pixel-format 'pf:rgba8888/u32))
+        (op (op-identity)))
+    (signals error (ip:map-image-pipeline plan (make-array 64) :pre op :work op :post op))))
+
+(test image-pipeline.map-image.f32-storage
+  (let ((plan (ip:make-plan :width 8 :height 8 :threads 4 :pixel-format 'pf:rgba/f32))
+        (pixels (make-f32-array (* 8 8 4))))
+    (dotimes (i (length pixels))
+      (setf (aref pixels i) (/ (mod i 7) 7f0)))
+    (let ((expected (copy-seq pixels)))
+      (ip:map-image plan pixels nil)
+      (is (equalp pixels expected)))))

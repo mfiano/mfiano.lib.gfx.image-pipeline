@@ -14,8 +14,6 @@
 
 (in-package #:mfiano.lib.gfx.image-pipeline)
 
-(deftype image () '(or (u8-array (*)) (u32-array (*))))
-
 (defstruct (plan
             (:constructor %make-plan)
             (:predicate nil)
@@ -26,7 +24,9 @@
   (kernel (lp:make-kernel 1) :type lp:kernel)
   (workspace (make-f64-array 0) :type pb:buffer)
   (encoder (constantly nil) :type function)
-  (decoder (constantly nil) :type function))
+  (decoder (constantly nil) :type function)
+  (storage :u32 :type pf:storage)
+  (pixels-length 0 :type fixnum))
 
 (defun map-rows (count function)
   (declare (optimize (speed 3))
@@ -67,6 +67,9 @@
         (values))
       (pf:decoder pixel-format)))
 
+(defun pixel-array-length (pixel-format width height)
+  (* width height (if (eq (pf:layout pixel-format) :packed) 1 (pf:channel-count pixel-format))))
+
 (defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4) filler)
   (check-type width u16+)
   (check-type height u16+)
@@ -85,7 +88,9 @@
                 :height height
                 :threads threads
                 :kernel kernel
-                :workspace workspace)))
+                :workspace workspace
+                :storage (pf:storage pixel-format)
+                :pixels-length (pixel-array-length pixel-format width height))))
 
 (define-ftype check-rect (u16+ u16+ u16 u16 (or u16 null) (or u16 null)) (values))
 (declaim (inline check-rect))
@@ -105,9 +110,24 @@
     (check-rect width height x1 y1 x2 y2)
     (values (- x2 x1) (- y2 y1) x1 y1)))
 
+(defun check-pixels (plan pixels)
+  (let ((storage (plan-storage plan))
+        (needed (plan-pixels-length plan)))
+    (unless (ecase storage
+              (:u8 (typep pixels '(u8-array (*))))
+              (:u16 (typep pixels '(u16-array (*))))
+              (:u32 (typep pixels '(u32-array (*))))
+              (:f32 (typep pixels '(f32-array (*))))
+              (:f64 (typep pixels '(f64-array (*)))))
+      (error "the plan's pixel format needs a ~s array for pixels" storage))
+    (when (< (length pixels) needed)
+      (error "pixels has ~d elements, but the plan's image needs ~d" (length pixels) needed))
+    (values)))
+
 (defun map-image (plan pixels op &key (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
   (declare (type (or null function) op))
+  (check-pixels plan pixels)
   (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
@@ -162,6 +182,7 @@
 (defun map-image-pipeline (plan pixels &key pre work post fused (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
   (declare (type function pre work post))
+  (check-pixels plan pixels)
   (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
