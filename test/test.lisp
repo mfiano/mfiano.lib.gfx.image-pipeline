@@ -393,7 +393,7 @@
 
 (test image-pipeline.make-plan.unfused-workspace
   (let ((plan (ip:make-plan :width 16 :height 64 :threads 4 :fused nil)))
-    (is (= (length (ip::plan-workspace plan)) (* 16 4 64)))))
+    (is (= (length (ip::plan-workspace plan)) (* (max (* 16 64) (* 4 (span-length))) 4)))))
 
 (test image-pipeline.cancel-plan.ends-threads
   (let* ((before (plan-thread-count))

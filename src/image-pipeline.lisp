@@ -93,7 +93,7 @@
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
          (workspace (make-f64-array (if fused
                                         (* threads +span-length+ 4)
-                                        (* width (max threads height) 4))))
+                                        (* (max (* width height) (* threads +span-length+)) 4))))
          (encoder (pf:encoder pixel-format))
          (decoder (make-decoder pixel-format filler width)))
     (prefault-workspace workspace kernel)

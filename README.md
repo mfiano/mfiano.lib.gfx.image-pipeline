@@ -45,7 +45,7 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 * `filler` makes the plan generate pixels instead of decoding them; see [Generating images](#generating-images)
 * `fused` defaults to true and sets how `map-image-pipeline` runs with this plan:
   * True: each run of 2048 pixels is decoded, run through `pre`, `work` and `post`, and encoded in one pass. The workspace holds 2048 pixels per thread, 64 KB each.
-  * Nil: three passes over the whole image, `pre`, then `work`, then `post`, which spatially dependent work such as convolution needs. The workspace holds the whole image at 32 bytes per pixel.
+  * Nil: three passes over the whole image, `pre`, then `work`, then `post`, which spatially dependent work such as convolution needs. The workspace holds the whole image at 32 bytes per pixel, and at least 2048 pixels per thread.
 * Making a plan writes its whole workspace once, so the first map with it runs as fast as later ones
 
 ### `cancel-plan`
