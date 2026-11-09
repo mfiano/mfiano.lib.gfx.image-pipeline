@@ -172,21 +172,25 @@ Another common workflow is to perform a color-grading operation that involves wo
 ;; - writes the new image out to disk
 (defun test ()
   (let* ((pixel-format 'mfiano.lib.gfx.pixel-format:rgba8888/u32)
-         (pixel-storage (mfiano.lib.gfx.pixel-format:get-storage pixel-format))
+         (pixel-storage (mfiano.lib.gfx.pixel-format:storage pixel-format))
          (image-path "~/test.qoi")
          ;; use `mfiano.lib.codec.qoi` to decode a QOI image to a (unsigned-byte 32) array (our pixel format's packed RGBA888 32bit integer representation)
-         (image (qoi:decode-file image-path :output pixel-storage))
-         (w (qoi:width image))
-         (h (qoi:height image))
-         (channels (qoi:channels image))
-         (pixels (qoi:pixels image))
+         (image (mfiano.lib.codec.qoi:decode-file image-path :output pixel-storage))
+         (w (mfiano.lib.codec.qoi:width image))
+         (h (mfiano.lib.codec.qoi:height image))
+         (channels (mfiano.lib.codec.qoi:channels image))
+         (pixels (mfiano.lib.codec.qoi:pixels image))
          ;; create a plan with a workspace the size of the image, using 24 threads (change for your hardware)
-         (plan (ip:make-plan :pixel-format pixel-format :width w :height h :threads 24)))
+         (plan (mfiano.lib.gfx.image-pipeline:make-plan
+                :pixel-format pixel-format
+                :width w
+                :height h
+                :threads 24)))
     ;; (SBCL): force a GC before timing to reduce noise
     (sb-ext:gc :full t)
     ;; benchmark the resource usage
     (time
-     (ip:map-image-pipeline
+     (mfiano.lib.gfx.image-pipeline:map-image-pipeline
       plan
       pixels
       :pre #'pre-op
@@ -194,7 +198,7 @@ Another common workflow is to perform a color-grading operation that involves wo
       :post #'post-op
       :fused t))
     ;; write the modified image out to disk
-    (qoi:encode-file pixels "~/out.qoi" :width w :height h :channels channels)
+    (mfiano.lib.codec.qoi:encode-file pixels "~/out.qoi" :width w :height h :channels channels)
     (values)))
 
 (test)
@@ -276,7 +280,8 @@ A `plan` owns an `lparallel` kernel. In long-running programs, you typically cre
 If you need to tear it down, you can end the kernel (internal accessor):
 
 ```lisp
-(lp:end-kernel (mfiano.lib.gfx.image-pipeline::plan-kernel *plan*))
+(let ((lparallel:*kernel* (mfiano.lib.gfx.image-pipeline::plan-kernel *plan*)))
+  (lparallel:end-kernel :wait t))
 ```
 
 ## Performance tips (the "don't accidentally make it slow" list)
