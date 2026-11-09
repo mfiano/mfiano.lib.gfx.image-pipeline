@@ -203,14 +203,14 @@ Another common workflow is to perform a color-grading operation that involves wo
 
 (test)
 Evaluation took:
-  0.116 seconds of real time
-  2.327821 seconds of total run time (2.297376 user, 0.030445 system)
-  2006.90% CPU
-  441,334,584 processor cycles
+  0.087 seconds of real time
+  2.045712 seconds of total run time (2.045044 user, 0.000668 system)
+  2351.72% CPU
+  329,750,282 processor cycles
   0 bytes consed
 ```
 
-Notice how we did 2.3s of work in 0.1s, using ~83% of our available CPU, and consed zero bytes.
+Notice how we did 2.0s of work in 0.087s, using ~98% of our available CPU, and consed zero bytes.
 
 The results are more than acceptable for a live coding environment, considering the work involved: multiple color space conversions to our temporary pixels, math to change the hue, and multiple conversions to bring it back to our display color space, over 42.25M bytes, with intermediate decodes and encodes from/to a `pixel-buffer`.
 
