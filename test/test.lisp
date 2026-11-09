@@ -259,6 +259,21 @@
     (ip:map-image-pipeline plan pixels :pre pre :work work :post post :fused t)
     (is (equalp pixels expected))))
 
+(test image-pipeline.map-image-pipeline.subrect
+  (let* ((plan (ip:make-plan :width 96 :height 128 :threads 8 :pixel-format 'pf:rgba8888/u32))
+         (pixels-fused (make-pattern-image plan))
+         (pixels-unfused (copy-seq pixels-fused))
+         (pre (pre-add-red 0.2d0))
+         (work (work-mul-green 0.75d0))
+         (post (post-set-alpha 0.5d0))
+         (rect (list :x1 5 :y1 11 :x2 61 :y2 90))
+         (args (list* :pre pre :work work :post post rect))
+         (expected (apply #'apply-pipeline-sequential plan pixels-fused pre work post rect)))
+    (apply #'ip:map-image-pipeline plan pixels-fused :fused t args)
+    (apply #'ip:map-image-pipeline plan pixels-unfused :fused nil args)
+    (is (equalp pixels-fused expected))
+    (is (equalp pixels-unfused expected))))
+
 (test image-pipeline.make-plan.fill
   (let ((plan (ip:make-plan :width 16
                             :height 8
