@@ -125,7 +125,7 @@
            (funcall encoder workspace workspace-index pixels pixel-index rect-width))))
       (values))))
 
-(defmacro do-pipeline-phases (&rest phases)
+(defmacro do-pipeline-phases ((&rest phases) &key worker-rows)
   (flet ((phase-loop (op)
            `(loop :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
                   :do (funcall ,op workspace lane))))
@@ -136,9 +136,12 @@
         (let* ((image-y (+ rect-y rect-row-index))
                (image-row-index (* image-y image-width))
                (pixel-index (+ image-row-index rect-x))
-               (workspace-index (* pixel-index workspace-lanes))
+               (workspace-index ,(if worker-rows
+                                     '(* (or (lp:kernel-worker-index) 0) workspace-row-width)
+                                     '(* pixel-index workspace-lanes)))
                (end (+ workspace-index (* rect-width workspace-lanes))))
-          (declare (type fixnum end))
+          (declare (type pb:index workspace-index)
+                   (type fixnum end))
           ,@(when (find :pre phases)
               `((funcall decoder pixels pixel-index workspace workspace-index rect-width)))
           ,@(loop :for (phase op) :in '((:pre pre) (:work work) (:post post))
@@ -154,13 +157,14 @@
     (let* ((image-width (plan-width plan))
            (workspace (plan-workspace plan))
            (workspace-lanes 4)
+           (workspace-row-width (* image-width workspace-lanes))
            (encoder (plan-encoder plan))
            (decoder (plan-decoder plan))
            (lp:*kernel* (plan-kernel plan)))
       (if fused
-          (do-pipeline-phases :pre :work :post)
+          (do-pipeline-phases (:pre :work :post) :worker-rows t)
           (progn
-            (do-pipeline-phases :pre)
-            (do-pipeline-phases :work)
-            (do-pipeline-phases :post)))
+            (do-pipeline-phases (:pre))
+            (do-pipeline-phases (:work))
+            (do-pipeline-phases (:post))))
       (values))))
