@@ -52,6 +52,7 @@
          (workspace (make-f64-array (* row-length (max threads height))))
          (encoder (pf:encoder pixel-format))
          (decoder (make-decoder pixel-format filler width)))
+    (prefault-workspace workspace kernel row-length)
     (%make-plan :encoder encoder
                 :decoder decoder
                 :width width
@@ -95,6 +96,14 @@
       (dotimes (worker workers)
         (lp:receive-result channel)))
     (values)))
+
+(defun prefault-workspace (workspace kernel row-length)
+  (let ((lp:*kernel* kernel))
+    (map-rows
+     (floor (length workspace) row-length)
+     (lambda (row)
+       (let ((start (* row row-length)))
+         (fill workspace 0d0 :start start :end (+ start row-length)))))))
 
 (defun map-image (plan pixels op &key (x1 0) (y1 0) x2 y2)
   (declare (optimize (speed 3)))
