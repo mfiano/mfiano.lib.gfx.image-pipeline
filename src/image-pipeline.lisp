@@ -25,6 +25,8 @@
   (threads 1 :type u8+)
   (kernel (lp:make-kernel 1) :type lp:kernel)
   (workspace (make-f64-array 0) :type pb:buffer)
+  (back (make-f64-array 0) :type pb:buffer)
+  (reach 1 :type u8)
   (encoder (constantly nil) :type function)
   (decoder (constantly nil) :type function)
   (storage :u32 :type pf:storage)
@@ -83,22 +85,35 @@
 (defun pixel-array-length (pixel-format width height)
   (* width height (if (eq (pf:layout pixel-format) :packed) 1 (pf:channel-count pixel-format))))
 
-(defun make-plan (&key (pixel-format 'pf:rgba8888/u32) width height (threads 4) (fused t) filler)
+(defun make-plan (&key
+                    (pixel-format 'pf:rgba8888/u32)
+                    width
+                    height
+                    (threads 4)
+                    (fused t)
+                    (reach 1)
+                    filler)
   (check-type pixel-format pf:pixel-format)
   (check-type width u16+)
   (check-type height u16+)
   (check-type threads u8+)
   (check-type fused boolean)
+  (check-type reach u8)
   (check-type filler (or null function))
   (let* ((kernel (lp:make-kernel threads :name "Pixel plan"))
+         (padded (* (+ width reach reach) (+ height reach reach)))
          (workspace (make-f64-array (if fused
                                         (* threads +span-length+ 4)
-                                        (* (max (* width height) (* threads +span-length+)) 4))))
+                                        (* (max padded (* threads +span-length+)) 4))))
+         (back (make-f64-array (if fused 0 (* padded 4))))
          (encoder (pf:encoder pixel-format))
          (decoder (make-decoder pixel-format filler width)))
     (prefault-workspace workspace kernel)
+    (prefault-workspace back kernel)
     (%make-plan :encoder encoder
                 :decoder decoder
+                :back back
+                :reach reach
                 :width width
                 :height height
                 :threads threads
@@ -113,6 +128,7 @@
     (let ((lp:*kernel* (plan-kernel plan)))
       (mapc #'bordeaux-threads:join-thread (lp:end-kernel :wait t))
       (setf (plan-workspace plan) (make-f64-array 0)
+            (plan-back plan) (make-f64-array 0)
             (plan-canceled plan) t)))
   (values))
 
@@ -158,7 +174,9 @@
       (error "pixels has ~d elements, but the plan's image needs ~d" (length pixels) needed))
     (values)))
 
-(defmacro span-runs ((pixel-index workspace-index count) per-worker &body body)
+(defmacro span-runs ((pixel-index workspace-index count &optional (x (gensym)) (y (gensym)))
+                     per-worker
+                     &body body)
   (with-gensyms (start end position worker first-row first-column row column)
     `(lambda (,start ,end)
        (declare (type u32 ,start ,end))
@@ -171,17 +189,24 @@
                  :for ,row :of-type u32 :from ,first-row
                  :for ,column :of-type u16 := ,first-column :then 0
                  :while (< ,position ,end)
-                 :do (let* ((,count (if (= rect-width image-width)
-                                        (- ,end ,position)
-                                        (min (- ,end ,position) (- rect-width ,column))))
-                            (,pixel-index (+ (* (+ rect-y ,row) image-width) rect-x ,column))
+                 :do (let* ((,count ,(if per-worker
+                                         `(if (= rect-width image-width)
+                                              (- ,end ,position)
+                                              (min (- ,end ,position) (- rect-width ,column)))
+                                         `(min (- ,end ,position) (- rect-width ,column))))
+                            (,x (+ rect-x ,column))
+                            (,y (+ rect-y ,row))
+                            (,pixel-index (+ (* ,y image-width) ,x))
                             (,workspace-index
                               ,(if per-worker
                                    `(* (+ (* ,worker +span-length+) (- ,position ,start))
                                        workspace-lanes)
-                                   `(* ,pixel-index workspace-lanes))))
+                                   `(* (+ (* (+ ,y reach) padded-width) ,x reach)
+                                       workspace-lanes))))
                        (declare (type fixnum ,count)
-                                (type pb:index ,pixel-index ,workspace-index))
+                                (type u16 ,x ,y)
+                                (type pb:index ,pixel-index ,workspace-index)
+                                (ignorable ,x ,y ,pixel-index))
                        ,@body
                        (incf ,position ,count))))))))
 
@@ -211,9 +236,10 @@
 
 (defmacro do-pipeline-phases ((&rest phases) &key per-worker)
   (flet ((phase-loop (op)
-           `(loop :with end :of-type fixnum := (+ workspace-index (* count workspace-lanes))
-                  :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
-                  :do (funcall ,op workspace lane))))
+           `(when ,op
+              (loop :with end :of-type fixnum := (+ workspace-index (* count workspace-lanes))
+                    :for lane :of-type fixnum :from workspace-index :below end :by workspace-lanes
+                    :do (funcall ,op workspace lane)))))
     `(map-spans
       (* rect-width rect-height)
       +span-length+
@@ -226,22 +252,162 @@
         ,@(when (find :post phases)
             `((funcall encoder workspace workspace-index pixels pixel-index count)))))))
 
-(defun map-image-pipeline (plan pixels &key pre work post (x1 0) (y1 0) x2 y2)
+(define-ftype grow-rect (u16 u16 u16 u16 u16+ u16+ u8 boolean) (values u16 u16 u16 u16))
+(defun grow-rect (x y width height image-width image-height reach wrap)
+  (flet ((grow (start size limit)
+           (let ((low (- start reach))
+                 (high (+ start size reach)))
+             (if (and wrap (or (minusp low) (> high limit)))
+                 (values 0 limit)
+                 (values (max 0 low) (min limit high))))))
+    (multiple-value-bind (x1 x2) (grow x width image-width)
+      (multiple-value-bind (y1 y2) (grow y height image-height)
+        (values x1 y1 x2 y2)))))
+
+(define-ftype padded-lane (fixnum fixnum u16+ u8) pb:index)
+(declaim (inline padded-lane))
+(defun padded-lane (x y width reach)
+  (* (+ (* (+ y reach) (+ width reach reach)) x reach) 4))
+
+(defun copy-ring (source destination width reach x1 y1 x2 y2 rect-x rect-y rect-x2 rect-y2)
+  (declare (optimize (speed 3))
+           (type pb:buffer source destination)
+           (type u16+ width)
+           (type u8 reach)
+           (type u16 x1 y1 x2 y2 rect-x rect-y rect-x2 rect-y2))
+  (flet ((copy (from-x to-x y)
+           (when (< from-x to-x)
+             (replace destination
+                      source
+                      :start1 (padded-lane from-x y width reach)
+                      :end1 (padded-lane to-x y width reach)
+                      :start2 (padded-lane from-x y width reach)))))
+    (loop :for y :from y1 :below y2
+          :do (if (< (1- rect-y) y rect-y2)
+                  (progn
+                    (copy x1 rect-x y)
+                    (copy rect-x2 x2 y))
+                  (copy x1 x2 y))))
+  (values))
+
+(defun fill-border (buffer width height reach edge)
+  (declare (optimize (speed 3))
+           (type pb:buffer buffer)
+           (type u16+ width height)
+           (type u8 reach))
+  (flet ((fill-pixel (x y)
+           (let ((lane (padded-lane x y width reach)))
+             (if (listp edge)
+                 (loop :for value :of-type f64 :in edge
+                       :for channel :of-type fixnum :from lane
+                       :do (setf (aref buffer channel) value))
+                 (let ((from (if (eq edge :wrap)
+                                 (padded-lane (mod x width) (mod y height) width reach)
+                                 (padded-lane (min (max x 0) (1- width))
+                                              (min (max y 0) (1- height))
+                                              width
+                                              reach))))
+                   (replace buffer buffer :start1 lane :end1 (+ lane 4) :start2 from))))))
+    (loop :for y :of-type fixnum :from (- reach) :below (+ height reach)
+          :do (if (< -1 y height)
+                  (dotimes (i reach)
+                    (fill-pixel (- -1 i) y)
+                    (fill-pixel (+ width i) y))
+                  (loop :for x :of-type fixnum :from (- reach) :below (+ width reach)
+                        :do (fill-pixel x y)))))
+  (values))
+
+(defun check-edge (edge)
+  (unless (or (member edge '(:clamp :wrap))
+              (and (listp edge)
+                   (= (length edge) 4)
+                   (every #'realp edge)))
+    (error "edge must be :clamp, :wrap or a list of four channel values, not ~s" edge))
+  (if (listp edge)
+      (mapcar #'f64 edge)
+      edge))
+
+(defun map-image-pipeline (plan
+                           pixels
+                           &key
+                             pre
+                             work
+                             post
+                             (passes 1)
+                             (edge :clamp)
+                             (x1 0)
+                             (y1 0)
+                             x2
+                             y2)
   (declare (optimize (speed 3)))
-  (declare (type function pre work post))
+  (declare (type (or null function) pre post)
+           (type function work))
   (check-plan plan)
   (check-pixels plan pixels)
-  (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
-    (let* ((image-width (plan-width plan))
-           (workspace (plan-workspace plan))
-           (workspace-lanes 4)
-           (encoder (plan-encoder plan))
-           (decoder (plan-decoder plan))
-           (lp:*kernel* (plan-kernel plan)))
-      (if (plan-fused plan)
-          (do-pipeline-phases (:pre :work :post) :per-worker t)
-          (progn
-            (do-pipeline-phases (:pre))
-            (do-pipeline-phases (:work))
-            (do-pipeline-phases (:post))))
-      (values))))
+  (check-type passes u16+)
+  (let ((edge (check-edge edge)))
+    (multiple-value-bind (rect-width rect-height rect-x rect-y) (make-rect plan x1 y1 x2 y2)
+      (let* ((image-width (plan-width plan))
+             (image-height (plan-height plan))
+             (workspace (plan-workspace plan))
+             (workspace-lanes 4)
+             (encoder (plan-encoder plan))
+             (decoder (plan-decoder plan))
+             (lp:*kernel* (plan-kernel plan)))
+        (if (plan-fused plan)
+            (progn
+              (unless (= passes 1)
+                (error "a fused plan runs one pass, not ~d" passes))
+              (do-pipeline-phases (:pre :work :post) :per-worker t))
+            (let* ((reach (plan-reach plan))
+                   (padded-width (+ image-width reach reach))
+                   (stride (* padded-width workspace-lanes))
+                   (source workspace)
+                   (destination (plan-back plan)))
+              (declare (type pb:buffer source destination))
+              (multiple-value-bind (grown-x1 grown-y1 grown-x2 grown-y2)
+                  (grow-rect rect-x
+                             rect-y
+                             rect-width
+                             rect-height
+                             image-width
+                             image-height
+                             reach
+                             (eq edge :wrap))
+                (let ((rect-x grown-x1)
+                      (rect-y grown-y1)
+                      (rect-width (- grown-x2 grown-x1))
+                      (rect-height (- grown-y2 grown-y1)))
+                  (do-pipeline-phases (:pre)))
+                (when (> passes 1)
+                  (copy-ring source
+                             destination
+                             image-width
+                             reach
+                             grown-x1
+                             grown-y1
+                             grown-x2
+                             grown-y2
+                             rect-x
+                             rect-y
+                             (+ rect-x rect-width)
+                             (+ rect-y rect-height))))
+              (dotimes (pass passes)
+                (fill-border source image-width image-height reach edge)
+                (let ((last (= pass (1- passes))))
+                  (map-spans
+                   (* rect-width rect-height)
+                   +span-length+
+                   (span-runs (pixel-index lane count x y) nil
+                     (loop :with end :of-type fixnum := (+ lane (* count workspace-lanes))
+                           :for at :of-type fixnum :from lane :below end :by workspace-lanes
+                           :for column :of-type fixnum :from x
+                           :do (funcall work source destination at stride column y))
+                     (when last
+                       (when post
+                         (loop :with end :of-type fixnum := (+ lane (* count workspace-lanes))
+                               :for at :of-type fixnum :from lane :below end :by workspace-lanes
+                               :do (funcall post destination at)))
+                       (funcall encoder destination lane pixels pixel-index count)))))
+                (rotatef source destination))))
+        (values)))))

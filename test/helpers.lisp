@@ -210,6 +210,13 @@
   (handler-case (progn (funcall function) nil)
     (error (condition) (princ-to-string condition))))
 
+(defun per-pixel-work (op)
+  (lambda (source destination lane stride x y)
+    (declare (ignore stride x y))
+    (replace destination source :start1 lane :end1 (+ lane 4) :start2 lane)
+    (funcall op destination lane)
+    (values)))
+
 (defun span-length ()
   ip::+span-length+)
 
@@ -230,8 +237,76 @@
                (results (loop :repeat 3 :collect (copy-seq pixels))))
           (apply #'ip:map-image plan (first results) op rect)
           (apply #'ip:map-image-pipeline plan (second results) (append ops rect))
-          (apply #'ip:map-image-pipeline unfused (third results) (append ops rect))
+          (apply #'ip:map-image-pipeline
+                 unfused
+                 (third results)
+                 :work (per-pixel-work work)
+                 (append ops rect))
           (cons (if filler
                     (apply #'apply-fill-sequential width height pixels (list pre work post) rect)
                     (apply #'apply-pipeline-sequential plan pixels pre work post rect))
                 results))))))
+
+(defun box-blur (source destination lane stride x y)
+  (declare (ignore x y))
+  (dotimes (channel 3)
+    (setf (aref destination (+ lane channel))
+          (/ (loop :for dy :from -1 :to 1
+                   :sum (loop :for dx :from -1 :to 1
+                              :sum (aref source (+ lane channel (* dx 4) (* dy stride)))))
+             9)))
+  (setf (aref destination (+ lane 3)) (aref source (+ lane 3)))
+  (values))
+
+(defun edge-sample (buffer width height x y channel edge)
+  (cond
+    ((and (< -1 x width) (< -1 y height))
+     (aref buffer (+ (* (+ (* y width) x) 4) channel)))
+    ((eq edge :clamp)
+     (edge-sample buffer
+                  width
+                  height
+                  (min (max x 0) (1- width))
+                  (min (max y 0) (1- height))
+                  channel
+                  edge))
+    ((eq edge :wrap)
+     (edge-sample buffer width height (mod x width) (mod y height) channel edge))
+    (t
+     (f64 (nth channel edge)))))
+
+(defun box-blur-buffer (buffer width height edge passes &key (x1 0) (y1 0) x2 y2)
+  (let ((x2 (or x2 width))
+        (y2 (or y2 height)))
+    (dotimes (pass passes buffer)
+      (let ((next (copy-seq buffer)))
+        (loop :for y :from y1 :below y2
+              :do (loop :for x :from x1 :below x2
+                        :for lane := (* (+ (* y width) x) 4)
+                        :do (dotimes (channel 3)
+                              (setf (aref next (+ lane channel))
+                                    (/ (loop :for dy :from -1 :to 1
+                                             :sum (loop :for dx :from -1 :to 1
+                                                        :sum (edge-sample buffer
+                                                                          width
+                                                                          height
+                                                                          (+ x dx)
+                                                                          (+ y dy)
+                                                                          channel
+                                                                          edge)))
+                                       9)))))
+        (setf buffer next)))))
+
+(defun blur-results (width height edge passes &rest rect)
+  (ip:with-plan (plan :width width :height height :threads 4 :fused nil)
+    (let* ((pixels (make-pattern-image plan))
+           (expected (encode-image plan
+                                   (apply #'box-blur-buffer
+                                          (decode-image plan pixels)
+                                          width
+                                          height
+                                          edge
+                                          passes
+                                          rect))))
+      (apply #'ip:map-image-pipeline plan pixels :work #'box-blur :passes passes :edge edge rect)
+      (values pixels expected))))

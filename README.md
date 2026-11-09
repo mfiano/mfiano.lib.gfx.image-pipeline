@@ -13,7 +13,7 @@ It handles:
 * decoding packed pixels -> per-pixel `double-float` lanes,
 * running your function on each pixel (optionally in parallel),
 * encoding lanes back to packed pixels,
-* optionally doing a 3-phase "pipeline" (pre/work/post), fused or unfused.
+* optionally doing a 3-phase "pipeline" (pre/work/post), either fused into one pass or unfused, where the work phase can read neighboring pixels.
 
 ## What it operates on
 
@@ -36,7 +36,7 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ### `make-plan`
 
 ```lisp
-(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads filler fused) => plan
+(mfiano.lib.gfx.image-pipeline:make-plan &key pixel-format width height threads filler fused reach) => plan
 ```
 
 * `pixel-format` defaults to `mfiano.lib.gfx.pixel-format:rgba8888/u32`
@@ -45,7 +45,8 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 * `filler` makes the plan generate pixels instead of decoding them; see [Generating images](#generating-images)
 * `fused` defaults to true and sets how `map-image-pipeline` runs with this plan:
   * True: each run of 2048 pixels is decoded, run through `pre`, `work` and `post`, and encoded in one pass. The workspace holds 2048 pixels per thread, 64 KB each.
-  * Nil: three passes over the whole image, `pre`, then `work`, then `post`, which spatially dependent work such as convolution needs. The workspace holds the whole image at 32 bytes per pixel, and at least 2048 pixels per thread.
+  * Nil: `pre` runs over the rect and every pixel within `reach` of it, then `work` runs once per pass, then `post`. Each pass reads one copy of the image and writes the other, so `work` can read the pixels around the one it computes; see [Neighborhood operations](#neighborhood-operations). The plan holds two copies of the image at 32 bytes per pixel, each with a border `reach` pixels wide, and the first holds at least 2048 pixels per thread.
+* `reach` defaults to 1 and only matters for unfused plans: it is how far from its own pixel a `work` op may read. A 3x3 neighborhood needs 1 and a 5x5 one needs 2
 * Making a plan writes its whole workspace once, so the first map with it runs as fast as later ones
 
 ### `cancel-plan`
@@ -83,12 +84,15 @@ Inside the pipeline, pixels are represented as a `(simple-array double-float (*)
 ### `map-image-pipeline`
 
 ```lisp
-(mfiano.lib.gfx.image-pipeline:map-image-pipeline plan pixels &key pre work post x1 y1 x2 y2) => (values)
+(mfiano.lib.gfx.image-pipeline:map-image-pipeline plan pixels &key pre work post passes edge x1 y1 x2 y2) => (values)
 ```
 
-* `pre`, `work`, `post` are each called like `op` above
+* `pre` and `post` are called like `op` above, and either may be nil
+* In a fused plan, `work` is called like `op` too. In an unfused plan it is called as `(funcall work source destination lane stride x y)`; see [Neighborhood operations](#neighborhood-operations)
+* `passes` defaults to 1 and is how many times an unfused plan runs `work`. A fused plan signals an error condition for any other value
+* `edge` defaults to `:clamp` and sets what an unfused `work` op reads past the image's edge: `:clamp` repeats the nearest edge pixel, `:wrap` reads from the opposite side, and a list of four channel values reads that constant color
 * Runs fused or unfused, as the plan was made; see `make-plan`
-* Signals the same error conditions as `map-image` for invalid rects and `pixels`
+* Signals the same error conditions as `map-image` for invalid rects and `pixels`, and an error condition for an invalid `passes` or `edge`
 
 ## Quick start
 
@@ -158,7 +162,7 @@ Example:
   :post (post-set-alpha 2d0))
 ```
 
-If you want the 'classic pipeline semantics' (three passes), make the plan with `:fused nil`.
+In a plan made with `:fused nil`, `work` reads neighboring pixels instead; see [Neighborhood operations](#neighborhood-operations).
 
 ## Advanced example
 
@@ -271,6 +275,38 @@ To keep the ramp as generated, pass `nil` as the op:
 (mfiano.lib.gfx.image-pipeline:map-image *ramp-plan* pixels nil)
 ```
 
+## Neighborhood operations
+
+An unfused plan lets `work` read the pixels around the one it computes, which convolution filters and cellular automata need. The plan keeps two copies of the image. Each pass reads from one copy, `source`, and writes into the other, `destination`, and the copies swap before the next pass, so a pass never reads a pixel it has already written.
+
+`work` is called as `(funcall work source destination lane stride x y)` for each pixel of the rect. `lane` is the pixel's first channel in both copies, `stride` is the number of lanes in one row, and `x` and `y` are the pixel's column and row in the image. The neighbor `dx` columns to the right and `dy` rows down starts at lane `(+ lane (* 4 dx) (* stride dy))`, for `dx` and `dy` up to the plan's `reach` in either direction. `work` must write all four channels of its pixel in `destination`, because nothing else writes them.
+
+A neighbor past the image's edge comes from the `edge` argument of `map-image-pipeline`. A neighbor outside the rect but inside the image is the image's own pixel, run through `pre`. `pre` runs once before the first pass and `post` once after the last, so a pipeline can convert into a working color space, filter there, and convert back.
+
+This example blurs an image three times with a 3x3 box filter:
+
+```lisp
+(defun box-blur (source destination lane stride x y)
+  (declare (ignore x y))
+  (dotimes (channel 3)
+    (setf (aref destination (+ lane channel))
+          (/ (loop :for dy :from -1 :to 1
+                   :sum (loop :for dx :from -1 :to 1
+                              :sum (aref source (+ lane channel (* dx 4) (* dy stride)))))
+             9)))
+  (setf (aref destination (+ lane 3)) (aref source (+ lane 3))))
+
+(defparameter *blur-plan*
+  (mfiano.lib.gfx.image-pipeline:make-plan
+   :pixel-format 'mfiano.lib.gfx.pixel-format:rgba8888/u32
+   :width 2048
+   :height 1024
+   :threads 8
+   :fused nil))
+
+(mfiano.lib.gfx.image-pipeline:map-image-pipeline *blur-plan* pixels :work #'box-blur :passes 3)
+```
+
 ## Notes and gotchas
 
 ### Rect semantics
@@ -294,7 +330,7 @@ Parallelism means your `op` should be:
 * only mutate the pixel it's handed (the workspace slice),
 * not depend on the order pixels are processed.
 
-If you want something order-dependent (dithering with an error buffer, convolution/CA neighborhoods, etc.), you probably want a different abstraction than 'map pixels independently', but see "Future work" below.
+Convolution filters and cellular automata read their neighbors from the previous pass, so they fit an unfused plan; see [Neighborhood operations](#neighborhood-operations). Work that depends on the order pixels are processed in, such as dithering with an error buffer, needs a different abstraction than mapping pixels independently.
 
 ### Plan lifetime
 
@@ -326,10 +362,6 @@ Tests:
 ```lisp
 (asdf:test-system :mfiano.lib.gfx.image-pipeline)
 ```
-
-## Future work
-
-* Support thread-safe double-buffering to allow for fast spatially-aware operations (image convolutions, cellular automata, etc).
 
 ## License
 

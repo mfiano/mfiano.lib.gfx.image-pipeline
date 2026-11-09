@@ -104,7 +104,7 @@
     (ip:map-image-pipeline plan-unfused
                            pixels-unfused
                            :pre #'op-pre
-                           :work #'op-work
+                           :work (per-pixel-work #'op-work)
                            :post #'op-post)
     (is (equalp pixels-fused pixels-unfused))
     (is (equalp pixels-fused expected-pixels))))
@@ -140,7 +140,7 @@
     (ip:map-image-pipeline plan-unfused
                            pixels-unfused
                            :pre #'op-pre
-                           :work #'op-work
+                           :work (per-pixel-work #'op-work)
                            :post #'op-post)
     (is (equalp pixels-fused pixels-unfused))
     (is (equalp pixels-fused expected-pixels))))
@@ -242,7 +242,11 @@
                (values)))
          (expected (apply-pipeline-sequential plan (copy-seq pixels-fused) pre work post)))
     (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post)
-    (ip:map-image-pipeline plan-unfused pixels-unfused :pre pre :work work :post post)
+    (ip:map-image-pipeline plan-unfused
+                           pixels-unfused
+                           :pre pre
+                           :work (per-pixel-work work)
+                           :post post)
     (ip:map-image plan pixels-map-image op)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))
@@ -270,7 +274,7 @@
          (args (list* :pre pre :work work :post post rect))
          (expected (apply #'apply-pipeline-sequential plan pixels-fused pre work post rect)))
     (apply #'ip:map-image-pipeline plan pixels-fused args)
-    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused args)
+    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused :work (per-pixel-work work) args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -337,7 +341,11 @@
          (post (post-set-alpha 0.5d0))
          (expected (apply-fill-sequential 96 128 pixels-fused (list pre work post))))
     (ip:map-image-pipeline plan pixels-fused :pre pre :work work :post post)
-    (ip:map-image-pipeline plan-unfused pixels-unfused :pre pre :work work :post post)
+    (ip:map-image-pipeline plan-unfused
+                           pixels-unfused
+                           :pre pre
+                           :work (per-pixel-work work)
+                           :post post)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -361,7 +369,7 @@
          (args (list :pre pre :work work :post post :x1 5 :y1 11 :x2 61 :y2 90))
          (expected (apply-fill-sequential 96 128 pixels-fused ops :x1 5 :y1 11 :x2 61 :y2 90)))
     (apply #'ip:map-image-pipeline plan pixels-fused args)
-    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused args)
+    (apply #'ip:map-image-pipeline plan-unfused pixels-unfused :work (per-pixel-work work) args)
     (is (equalp pixels-fused expected))
     (is (equalp pixels-unfused expected))))
 
@@ -462,3 +470,72 @@
         (pipeline-results 7 height :filler #'fill-position :x1 2 :y1 1 :x2 5 :y2 (1- height))
       (dolist (result results)
         (is (equalp result expected))))))
+
+(test image-pipeline.neighbors.clamp
+  (multiple-value-bind (pixels expected) (blur-results 37 23 :clamp 1)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.neighbors.wrap
+  (multiple-value-bind (pixels expected) (blur-results 37 23 :wrap 1)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.neighbors.constant
+  (multiple-value-bind (pixels expected) (blur-results 37 23 '(1 0 1/2 1) 1)
+    (is (equalp pixels expected))))
+
+(test image-pipeline.neighbors.passes
+  (dolist (edge (list :clamp :wrap '(0 1 0 1)))
+    (multiple-value-bind (pixels expected) (blur-results 37 23 edge 3)
+      (is (equalp pixels expected)))))
+
+(test image-pipeline.neighbors.subrect
+  (dolist (rect '((5 4 30 19) (0 3 10 12) (20 0 37 9) (0 0 37 23)))
+    (dolist (edge '(:clamp :wrap))
+      (destructuring-bind (x1 y1 x2 y2) rect
+        (multiple-value-bind (pixels expected)
+            (blur-results 37 23 edge 2 :x1 x1 :y1 y1 :x2 x2 :y2 y2)
+          (is (equalp pixels expected)))))))
+
+(test image-pipeline.neighbors.spans-cross-rows
+  (dolist (shape (list (list 3 (+ (span-length) 2)) (list (+ (* 2 (span-length)) 5) 2)))
+    (multiple-value-bind (pixels expected) (apply #'blur-results (append shape '(:clamp 2)))
+      (is (equalp pixels expected)))))
+
+(test image-pipeline.neighbors.position
+  (ip:with-plan (plan :width 40 :height 30 :threads 4 :fused nil)
+    (let* ((pixels (make-pattern-image plan))
+           (expected (apply-fill-sequential 40 30 pixels nil :x1 3 :y1 2 :x2 33 :y2 25)))
+      (ip:map-image-pipeline plan
+                             pixels
+                             :work (lambda (source destination lane stride x y)
+                                     (declare (ignore source stride))
+                                     (set-position destination lane x y))
+                             :x1 3
+                             :y1 2
+                             :x2 33
+                             :y2 25)
+      (is (equalp pixels expected)))))
+
+(test image-pipeline.neighbors.filler
+  (ip:with-plan (plan :width 37 :height 23 :threads 4 :fused nil :filler #'fill-position)
+    (let* ((pixels (make-pattern-image plan))
+           (filled (decode-u32-rgba (apply-fill-sequential 37 23 pixels nil) 37 23))
+           (expected (encode-image plan (box-blur-buffer filled 37 23 :wrap 2))))
+      (ip:map-image-pipeline plan pixels :work #'box-blur :passes 2 :edge :wrap)
+      (is (equalp pixels expected)))))
+
+(test image-pipeline.neighbors.reach
+  (ip:with-plan (plan :width 16 :height 8 :threads 2 :fused nil :reach 3)
+    (is (= (length (ip::plan-back plan)) (* 22 14 4))))
+  (signals error (ip:make-plan :width 16 :height 8 :fused nil :reach -1))
+  (signals error (ip:make-plan :width 16 :height 8 :fused nil :reach 256)))
+
+(test image-pipeline.neighbors.bad-arguments
+  (ip:with-plan (plan :width 16 :height 8 :threads 2)
+    (let ((pixels (make-pattern-image plan)))
+      (signals error (ip:map-image-pipeline plan pixels :work #'op-work :passes 2))))
+  (ip:with-plan (plan :width 16 :height 8 :threads 2 :fused nil)
+    (let ((pixels (make-pattern-image plan)))
+      (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :edge :mirror))
+      (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :edge '(1 0 0)))
+      (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :passes 0)))))
