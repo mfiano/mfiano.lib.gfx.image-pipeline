@@ -539,3 +539,22 @@
       (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :edge :mirror))
       (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :edge '(1 0 0)))
       (signals error (ip:map-image-pipeline plan pixels :work #'box-blur :passes 0)))))
+
+(test image-pipeline.neighbors.errors-release-the-other-workers
+  (let ((debug-tasks lp:*debug-tasks-p*))
+    (unwind-protect
+         (ip:with-plan (plan :width 37 :height 23 :threads 4 :fused nil)
+           (setf lp:*debug-tasks-p* nil)
+           (let ((pixels (make-pattern-image plan))
+                 (visits 0))
+             (signals error
+               (ip:map-image-pipeline plan
+                                      pixels
+                                      :work (lambda (source destination lane stride x y)
+                                              (when (and (= x 5) (= y 5) (= (incf visits) 2))
+                                                (error "failing on the second pass"))
+                                              (box-blur source destination lane stride x y))
+                                      :passes 3))
+             (multiple-value-bind (pixels expected) (blur-results 37 23 :clamp 3)
+               (is (equalp pixels expected)))))
+      (setf lp:*debug-tasks-p* debug-tasks))))
